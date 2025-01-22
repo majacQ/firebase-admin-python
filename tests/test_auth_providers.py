@@ -21,12 +21,13 @@ import pytest
 import firebase_admin
 from firebase_admin import auth
 from firebase_admin import exceptions
+from firebase_admin import _utils
 from tests import testutils
 
-ID_TOOLKIT_URL = 'https://identitytoolkit.googleapis.com/v2beta1'
+ID_TOOLKIT_URL = 'https://identitytoolkit.googleapis.com/v2'
 EMULATOR_HOST_ENV_VAR = 'FIREBASE_AUTH_EMULATOR_HOST'
 AUTH_EMULATOR_HOST = 'localhost:9099'
-EMULATED_ID_TOOLKIT_URL = 'http://{}/identitytoolkit.googleapis.com/v2beta1'.format(
+EMULATED_ID_TOOLKIT_URL = 'http://{}/identitytoolkit.googleapis.com/v2'.format(
     AUTH_EMULATOR_HOST)
 URL_PROJECT_SUFFIX = '/projects/mock-project-id'
 USER_MGT_URLS = {
@@ -70,6 +71,11 @@ def _instrument_provider_mgt(app, status, payload):
         testutils.MockAdapter(payload, status, recorder))
     return recorder
 
+def _assert_request(request, expected_method, expected_url):
+    assert request.method == expected_method
+    assert request.url == expected_url
+    assert request.headers['X-Client-Version'] == f'Python/Admin/{firebase_admin.__version__}'
+    assert request.headers['X-GOOG-API-CLIENT'] == _utils.get_metrics_header()
 
 class TestOIDCProviderConfig:
 
@@ -79,13 +85,21 @@ class TestOIDCProviderConfig:
         'issuer': 'https://oidc.com/issuer',
         'display_name': 'oidcProviderName',
         'enabled': True,
+        'id_token_response_type': True,
+        'code_response_type': True,
+        'client_secret': 'CLIENT_SECRET',
     }
 
     OIDC_CONFIG_REQUEST = {
         'displayName': 'oidcProviderName',
         'enabled': True,
         'clientId': 'CLIENT_ID',
+        'clientSecret': 'CLIENT_SECRET',
         'issuer': 'https://oidc.com/issuer',
+        'responseType': {
+            'code': True,
+            'idToken': True,
+        },
     }
 
     @pytest.mark.parametrize('provider_id', INVALID_PROVIDER_IDS + ['saml.provider'])
@@ -102,9 +116,8 @@ class TestOIDCProviderConfig:
 
         self._assert_provider_config(provider_config)
         assert len(recorder) == 1
-        req = recorder[0]
-        assert req.method == 'GET'
-        assert req.url == '{0}{1}'.format(USER_MGT_URLS['PREFIX'], '/oauthIdpConfigs/oidc.provider')
+        _assert_request(
+            recorder[0], 'GET', f'{USER_MGT_URLS["PREFIX"]}/oauthIdpConfigs/oidc.provider')
 
     @pytest.mark.parametrize('invalid_opts', [
         {'provider_id': None}, {'provider_id': ''}, {'provider_id': 'saml.provider'},
@@ -112,6 +125,11 @@ class TestOIDCProviderConfig:
         {'issuer': None}, {'issuer': ''}, {'issuer': 'not a url'},
         {'display_name': True},
         {'enabled': 'true'},
+        {'id_token_response_type': 'true'}, {'code_response_type': 'true'},
+        {'code_response_type': True, 'client_secret': ''},
+        {'code_response_type': True, 'client_secret': True},
+        {'code_response_type': True, 'client_secret': None},
+        {'code_response_type': False, 'id_token_response_type': False},
     ])
     def test_create_invalid_args(self, user_mgt_app, invalid_opts):
         options = dict(self.VALID_CREATE_OPTIONS)
@@ -127,11 +145,9 @@ class TestOIDCProviderConfig:
 
         self._assert_provider_config(provider_config)
         assert len(recorder) == 1
-        req = recorder[0]
-        assert req.method == 'POST'
-        assert req.url == '{0}/oauthIdpConfigs?oauthIdpConfigId=oidc.provider'.format(
-            USER_MGT_URLS['PREFIX'])
-        got = json.loads(req.body.decode())
+        _assert_request(recorder[0], 'POST',
+                        f'{USER_MGT_URLS["PREFIX"]}/oauthIdpConfigs?oauthIdpConfigId=oidc.provider')
+        got = json.loads(recorder[0].body.decode())
         assert got == self.OIDC_CONFIG_REQUEST
 
     def test_create_minimal(self, user_mgt_app):
@@ -139,19 +155,22 @@ class TestOIDCProviderConfig:
         options = dict(self.VALID_CREATE_OPTIONS)
         del options['display_name']
         del options['enabled']
+        del options['client_secret']
+        del options['id_token_response_type']
+        del options['code_response_type']
         want = dict(self.OIDC_CONFIG_REQUEST)
         del want['displayName']
         del want['enabled']
+        del want['clientSecret']
+        del want['responseType']
 
         provider_config = auth.create_oidc_provider_config(**options, app=user_mgt_app)
 
         self._assert_provider_config(provider_config)
         assert len(recorder) == 1
-        req = recorder[0]
-        assert req.method == 'POST'
-        assert req.url == '{0}/oauthIdpConfigs?oauthIdpConfigId=oidc.provider'.format(
-            USER_MGT_URLS['PREFIX'])
-        got = json.loads(req.body.decode())
+        _assert_request(recorder[0], 'POST',
+                        f'{USER_MGT_URLS["PREFIX"]}/oauthIdpConfigs?oauthIdpConfigId=oidc.provider')
+        got = json.loads(recorder[0].body.decode())
         assert got == want
 
     def test_create_empty_values(self, user_mgt_app):
@@ -159,19 +178,23 @@ class TestOIDCProviderConfig:
         options = dict(self.VALID_CREATE_OPTIONS)
         options['display_name'] = ''
         options['enabled'] = False
+        options['code_response_type'] = False
         want = dict(self.OIDC_CONFIG_REQUEST)
         want['displayName'] = ''
         want['enabled'] = False
+        want['responseType'] = {
+            'code': False,
+            'idToken': True,
+        }
+        del want['clientSecret']
 
         provider_config = auth.create_oidc_provider_config(**options, app=user_mgt_app)
 
         self._assert_provider_config(provider_config)
         assert len(recorder) == 1
-        req = recorder[0]
-        assert req.method == 'POST'
-        assert req.url == '{0}/oauthIdpConfigs?oauthIdpConfigId=oidc.provider'.format(
-            USER_MGT_URLS['PREFIX'])
-        got = json.loads(req.body.decode())
+        _assert_request(recorder[0], 'POST',
+                        f'{USER_MGT_URLS["PREFIX"]}/oauthIdpConfigs?oauthIdpConfigId=oidc.provider')
+        got = json.loads(recorder[0].body.decode())
         assert got == want
 
     @pytest.mark.parametrize('invalid_opts', [
@@ -181,6 +204,11 @@ class TestOIDCProviderConfig:
         {'issuer': ''}, {'issuer': 'not a url'},
         {'display_name': True},
         {'enabled': 'true'},
+        {'id_token_response_type': 'true'}, {'code_response_type': 'true'},
+        {'code_response_type': True, 'client_secret': ''},
+        {'code_response_type': True, 'client_secret': True},
+        {'code_response_type': True, 'client_secret': None},
+        {'code_response_type': False, 'id_token_response_type': False},
     ])
     def test_update_invalid_args(self, user_mgt_app, invalid_opts):
         options = {'provider_id': 'oidc.provider'}
@@ -196,12 +224,12 @@ class TestOIDCProviderConfig:
 
         self._assert_provider_config(provider_config)
         assert len(recorder) == 1
-        req = recorder[0]
-        assert req.method == 'PATCH'
-        mask = ['clientId', 'displayName', 'enabled', 'issuer']
-        assert req.url == '{0}/oauthIdpConfigs/oidc.provider?updateMask={1}'.format(
-            USER_MGT_URLS['PREFIX'], ','.join(mask))
-        got = json.loads(req.body.decode())
+        mask = ['clientId', 'clientSecret', 'displayName', 'enabled', 'issuer',
+                'responseType.code', 'responseType.idToken']
+        _assert_request(recorder[0], 'PATCH',
+                        f'{USER_MGT_URLS["PREFIX"]}/oauthIdpConfigs/oidc.provider?'
+                        f'updateMask={",".join(mask)}')
+        got = json.loads(recorder[0].body.decode())
         assert got == self.OIDC_CONFIG_REQUEST
 
     def test_update_minimal(self, user_mgt_app):
@@ -212,28 +240,27 @@ class TestOIDCProviderConfig:
 
         self._assert_provider_config(provider_config)
         assert len(recorder) == 1
-        req = recorder[0]
-        assert req.method == 'PATCH'
-        assert req.url == '{0}/oauthIdpConfigs/oidc.provider?updateMask=displayName'.format(
-            USER_MGT_URLS['PREFIX'])
-        got = json.loads(req.body.decode())
+        _assert_request(recorder[0], 'PATCH',
+                        f'{USER_MGT_URLS["PREFIX"]}/oauthIdpConfigs/oidc.provider?'
+                        f'updateMask=displayName')
+        got = json.loads(recorder[0].body.decode())
         assert got == {'displayName': 'oidcProviderName'}
 
     def test_update_empty_values(self, user_mgt_app):
         recorder = _instrument_provider_mgt(user_mgt_app, 200, OIDC_PROVIDER_CONFIG_RESPONSE)
 
         provider_config = auth.update_oidc_provider_config(
-            'oidc.provider', display_name=auth.DELETE_ATTRIBUTE, enabled=False, app=user_mgt_app)
+            'oidc.provider', display_name=auth.DELETE_ATTRIBUTE, enabled=False,
+            id_token_response_type=False, app=user_mgt_app)
 
         self._assert_provider_config(provider_config)
         assert len(recorder) == 1
-        req = recorder[0]
-        assert req.method == 'PATCH'
-        mask = ['displayName', 'enabled']
-        assert req.url == '{0}/oauthIdpConfigs/oidc.provider?updateMask={1}'.format(
-            USER_MGT_URLS['PREFIX'], ','.join(mask))
-        got = json.loads(req.body.decode())
-        assert got == {'displayName': None, 'enabled': False}
+        mask = ['displayName', 'enabled', 'responseType.idToken']
+        _assert_request(recorder[0], 'PATCH',
+                        f'{USER_MGT_URLS["PREFIX"]}/oauthIdpConfigs/oidc.provider?'
+                        f'updateMask={",".join(mask)}')
+        got = json.loads(recorder[0].body.decode())
+        assert got == {'displayName': None, 'enabled': False, 'responseType': {'idToken': False}}
 
     @pytest.mark.parametrize('provider_id', INVALID_PROVIDER_IDS + ['saml.provider'])
     def test_delete_invalid_provider_id(self, user_mgt_app, provider_id):
@@ -248,9 +275,8 @@ class TestOIDCProviderConfig:
         auth.delete_oidc_provider_config('oidc.provider', app=user_mgt_app)
 
         assert len(recorder) == 1
-        req = recorder[0]
-        assert req.method == 'DELETE'
-        assert req.url == '{0}{1}'.format(USER_MGT_URLS['PREFIX'], '/oauthIdpConfigs/oidc.provider')
+        _assert_request(recorder[0], 'DELETE',
+                        f'{USER_MGT_URLS["PREFIX"]}/oauthIdpConfigs/oidc.provider')
 
     @pytest.mark.parametrize('arg', [None, 'foo', list(), dict(), 0, -1, 101, False])
     def test_invalid_max_results(self, user_mgt_app, arg):
@@ -271,9 +297,8 @@ class TestOIDCProviderConfig:
         assert len(provider_configs) == 2
 
         assert len(recorder) == 1
-        req = recorder[0]
-        assert req.method == 'GET'
-        assert req.url == '{0}{1}'.format(USER_MGT_URLS['PREFIX'], '/oauthIdpConfigs?pageSize=100')
+        _assert_request(recorder[0], 'GET',
+                        f'{USER_MGT_URLS["PREFIX"]}/oauthIdpConfigs?pageSize=100')
 
     def test_list_multiple_pages(self, user_mgt_app):
         sample_response = json.loads(OIDC_PROVIDER_CONFIG_RESPONSE)
@@ -289,9 +314,8 @@ class TestOIDCProviderConfig:
 
         self._assert_page(page, next_page_token='token')
         assert len(recorder) == 1
-        req = recorder[0]
-        assert req.method == 'GET'
-        assert req.url == '{0}/oauthIdpConfigs?pageSize=10'.format(USER_MGT_URLS['PREFIX'])
+        _assert_request(recorder[0], 'GET',
+                        f'{USER_MGT_URLS["PREFIX"]}/oauthIdpConfigs?pageSize=10')
 
         # Page 2 (also the last page)
         response = {'oauthIdpConfigs': configs[2:]}
@@ -300,10 +324,8 @@ class TestOIDCProviderConfig:
 
         self._assert_page(page, count=1, start=2)
         assert len(recorder) == 1
-        req = recorder[0]
-        assert req.method == 'GET'
-        assert req.url == '{0}/oauthIdpConfigs?pageSize=10&pageToken=token'.format(
-            USER_MGT_URLS['PREFIX'])
+        _assert_request(recorder[0], 'GET',
+                        f'{USER_MGT_URLS["PREFIX"]}/oauthIdpConfigs?pageSize=10&pageToken=token')
 
     def test_paged_iteration(self, user_mgt_app):
         sample_response = json.loads(OIDC_PROVIDER_CONFIG_RESPONSE)
@@ -322,9 +344,8 @@ class TestOIDCProviderConfig:
             provider_config = next(iterator)
             assert provider_config.provider_id == 'oidc.provider{0}'.format(index)
         assert len(recorder) == 1
-        req = recorder[0]
-        assert req.method == 'GET'
-        assert req.url == '{0}/oauthIdpConfigs?pageSize=100'.format(USER_MGT_URLS['PREFIX'])
+        _assert_request(recorder[0], 'GET',
+                        f'{USER_MGT_URLS["PREFIX"]}/oauthIdpConfigs?pageSize=100')
 
         # Page 2 (also the last page)
         response = {'oauthIdpConfigs': configs[2:]}
@@ -333,10 +354,8 @@ class TestOIDCProviderConfig:
         provider_config = next(iterator)
         assert provider_config.provider_id == 'oidc.provider2'
         assert len(recorder) == 1
-        req = recorder[0]
-        assert req.method == 'GET'
-        assert req.url == '{0}/oauthIdpConfigs?pageSize=100&pageToken=token'.format(
-            USER_MGT_URLS['PREFIX'])
+        _assert_request(recorder[0], 'GET',
+                        f'{USER_MGT_URLS["PREFIX"]}/oauthIdpConfigs?pageSize=100&pageToken=token')
 
         with pytest.raises(StopIteration):
             next(iterator)
@@ -433,10 +452,8 @@ class TestSAMLProviderConfig:
 
         self._assert_provider_config(provider_config)
         assert len(recorder) == 1
-        req = recorder[0]
-        assert req.method == 'GET'
-        assert req.url == '{0}{1}'.format(USER_MGT_URLS['PREFIX'],
-                                          '/inboundSamlConfigs/saml.provider')
+        _assert_request(recorder[0], 'GET',
+                        f'{USER_MGT_URLS["PREFIX"]}/inboundSamlConfigs/saml.provider')
 
     @pytest.mark.parametrize('invalid_opts', [
         {'provider_id': None}, {'provider_id': ''}, {'provider_id': 'oidc.provider'},
@@ -463,11 +480,10 @@ class TestSAMLProviderConfig:
 
         self._assert_provider_config(provider_config)
         assert len(recorder) == 1
-        req = recorder[0]
-        assert req.method == 'POST'
-        assert req.url == '{0}/inboundSamlConfigs?inboundSamlConfigId=saml.provider'.format(
-            USER_MGT_URLS['PREFIX'])
-        got = json.loads(req.body.decode())
+        _assert_request(recorder[0], 'POST',
+                        f'{USER_MGT_URLS["PREFIX"]}/inboundSamlConfigs?'
+                        f'inboundSamlConfigId=saml.provider')
+        got = json.loads(recorder[0].body.decode())
         assert got == self.SAML_CONFIG_REQUEST
 
     def test_create_minimal(self, user_mgt_app):
@@ -483,11 +499,10 @@ class TestSAMLProviderConfig:
 
         self._assert_provider_config(provider_config)
         assert len(recorder) == 1
-        req = recorder[0]
-        assert req.method == 'POST'
-        assert req.url == '{0}/inboundSamlConfigs?inboundSamlConfigId=saml.provider'.format(
-            USER_MGT_URLS['PREFIX'])
-        got = json.loads(req.body.decode())
+        _assert_request(recorder[0], 'POST',
+                        f'{USER_MGT_URLS["PREFIX"]}/inboundSamlConfigs?'
+                        f'inboundSamlConfigId=saml.provider')
+        got = json.loads(recorder[0].body.decode())
         assert got == want
 
     def test_create_empty_values(self, user_mgt_app):
@@ -503,11 +518,10 @@ class TestSAMLProviderConfig:
 
         self._assert_provider_config(provider_config)
         assert len(recorder) == 1
-        req = recorder[0]
-        assert req.method == 'POST'
-        assert req.url == '{0}/inboundSamlConfigs?inboundSamlConfigId=saml.provider'.format(
-            USER_MGT_URLS['PREFIX'])
-        got = json.loads(req.body.decode())
+        _assert_request(recorder[0], 'POST',
+                        f'{USER_MGT_URLS["PREFIX"]}/inboundSamlConfigs?'
+                        f'inboundSamlConfigId=saml.provider')
+        got = json.loads(recorder[0].body.decode())
         assert got == want
 
     @pytest.mark.parametrize('invalid_opts', [
@@ -536,15 +550,14 @@ class TestSAMLProviderConfig:
 
         self._assert_provider_config(provider_config)
         assert len(recorder) == 1
-        req = recorder[0]
-        assert req.method == 'PATCH'
         mask = [
             'displayName', 'enabled', 'idpConfig.idpCertificates', 'idpConfig.idpEntityId',
             'idpConfig.ssoUrl', 'spConfig.callbackUri', 'spConfig.spEntityId',
         ]
-        assert req.url == '{0}/inboundSamlConfigs/saml.provider?updateMask={1}'.format(
-            USER_MGT_URLS['PREFIX'], ','.join(mask))
-        got = json.loads(req.body.decode())
+        _assert_request(recorder[0], 'PATCH',
+                        f'{USER_MGT_URLS["PREFIX"]}/inboundSamlConfigs/saml.provider?'
+                        f'updateMask={",".join(mask)}')
+        got = json.loads(recorder[0].body.decode())
         assert got == self.SAML_CONFIG_REQUEST
 
     def test_update_minimal(self, user_mgt_app):
@@ -555,11 +568,10 @@ class TestSAMLProviderConfig:
 
         self._assert_provider_config(provider_config)
         assert len(recorder) == 1
-        req = recorder[0]
-        assert req.method == 'PATCH'
-        assert req.url == '{0}/inboundSamlConfigs/saml.provider?updateMask=displayName'.format(
-            USER_MGT_URLS['PREFIX'])
-        got = json.loads(req.body.decode())
+        _assert_request(recorder[0], 'PATCH',
+                        f'{USER_MGT_URLS["PREFIX"]}/inboundSamlConfigs/saml.provider?'
+                        f'updateMask=displayName')
+        got = json.loads(recorder[0].body.decode())
         assert got == {'displayName': 'samlProviderName'}
 
     def test_update_empty_values(self, user_mgt_app):
@@ -570,12 +582,11 @@ class TestSAMLProviderConfig:
 
         self._assert_provider_config(provider_config)
         assert len(recorder) == 1
-        req = recorder[0]
-        assert req.method == 'PATCH'
         mask = ['displayName', 'enabled']
-        assert req.url == '{0}/inboundSamlConfigs/saml.provider?updateMask={1}'.format(
-            USER_MGT_URLS['PREFIX'], ','.join(mask))
-        got = json.loads(req.body.decode())
+        _assert_request(recorder[0], 'PATCH',
+                        f'{USER_MGT_URLS["PREFIX"]}/inboundSamlConfigs/saml.provider?'
+                        f'updateMask={",".join(mask)}')
+        got = json.loads(recorder[0].body.decode())
         assert got == {'displayName': None, 'enabled': False}
 
     @pytest.mark.parametrize('provider_id', INVALID_PROVIDER_IDS + ['oidc.provider'])
@@ -591,10 +602,8 @@ class TestSAMLProviderConfig:
         auth.delete_saml_provider_config('saml.provider', app=user_mgt_app)
 
         assert len(recorder) == 1
-        req = recorder[0]
-        assert req.method == 'DELETE'
-        assert req.url == '{0}{1}'.format(USER_MGT_URLS['PREFIX'],
-                                          '/inboundSamlConfigs/saml.provider')
+        _assert_request(
+            recorder[0], 'DELETE', f'{USER_MGT_URLS["PREFIX"]}/inboundSamlConfigs/saml.provider')
 
     def test_config_not_found(self, user_mgt_app):
         _instrument_provider_mgt(user_mgt_app, 500, CONFIG_NOT_FOUND_RESPONSE)
@@ -627,10 +636,8 @@ class TestSAMLProviderConfig:
         assert len(provider_configs) == 2
 
         assert len(recorder) == 1
-        req = recorder[0]
-        assert req.method == 'GET'
-        assert req.url == '{0}{1}'.format(USER_MGT_URLS['PREFIX'],
-                                          '/inboundSamlConfigs?pageSize=100')
+        _assert_request(
+            recorder[0], 'GET', f'{USER_MGT_URLS["PREFIX"]}/inboundSamlConfigs?pageSize=100')
 
     def test_list_multiple_pages(self, user_mgt_app):
         sample_response = json.loads(SAML_PROVIDER_CONFIG_RESPONSE)
@@ -646,9 +653,8 @@ class TestSAMLProviderConfig:
 
         self._assert_page(page, next_page_token='token')
         assert len(recorder) == 1
-        req = recorder[0]
-        assert req.method == 'GET'
-        assert req.url == '{0}/inboundSamlConfigs?pageSize=10'.format(USER_MGT_URLS['PREFIX'])
+        _assert_request(
+            recorder[0], 'GET', f'{USER_MGT_URLS["PREFIX"]}/inboundSamlConfigs?pageSize=10')
 
         # Page 2 (also the last page)
         response = {'inboundSamlConfigs': configs[2:]}
@@ -657,10 +663,9 @@ class TestSAMLProviderConfig:
 
         self._assert_page(page, count=1, start=2)
         assert len(recorder) == 1
-        req = recorder[0]
-        assert req.method == 'GET'
-        assert req.url == '{0}/inboundSamlConfigs?pageSize=10&pageToken=token'.format(
-            USER_MGT_URLS['PREFIX'])
+        _assert_request(
+            recorder[0], 'GET',
+            f'{USER_MGT_URLS["PREFIX"]}/inboundSamlConfigs?pageSize=10&pageToken=token')
 
     def test_paged_iteration(self, user_mgt_app):
         sample_response = json.loads(SAML_PROVIDER_CONFIG_RESPONSE)
@@ -679,9 +684,8 @@ class TestSAMLProviderConfig:
             provider_config = next(iterator)
             assert provider_config.provider_id == 'saml.provider{0}'.format(index)
         assert len(recorder) == 1
-        req = recorder[0]
-        assert req.method == 'GET'
-        assert req.url == '{0}/inboundSamlConfigs?pageSize=100'.format(USER_MGT_URLS['PREFIX'])
+        _assert_request(
+            recorder[0], 'GET', f'{USER_MGT_URLS["PREFIX"]}/inboundSamlConfigs?pageSize=100')
 
         # Page 2 (also the last page)
         response = {'inboundSamlConfigs': configs[2:]}
@@ -690,10 +694,9 @@ class TestSAMLProviderConfig:
         provider_config = next(iterator)
         assert provider_config.provider_id == 'saml.provider2'
         assert len(recorder) == 1
-        req = recorder[0]
-        assert req.method == 'GET'
-        assert req.url == '{0}/inboundSamlConfigs?pageSize=100&pageToken=token'.format(
-            USER_MGT_URLS['PREFIX'])
+        _assert_request(
+            recorder[0], 'GET',
+            f'{USER_MGT_URLS["PREFIX"]}/inboundSamlConfigs?pageSize=100&pageToken=token')
 
         with pytest.raises(StopIteration):
             next(iterator)

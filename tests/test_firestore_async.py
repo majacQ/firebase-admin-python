@@ -1,4 +1,4 @@
-# Copyright 2017 Google Inc.
+# Copyright 2022 Google Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for firebase_admin.firestore."""
+"""Tests for firebase_admin.firestore_async."""
 
 import platform
 
@@ -21,7 +21,7 @@ import pytest
 import firebase_admin
 from firebase_admin import credentials
 try:
-    from firebase_admin import firestore
+    from firebase_admin import firestore_async
 except ImportError:
     pass
 from tests import testutils
@@ -30,8 +30,8 @@ from tests import testutils
 @pytest.mark.skipif(
     platform.python_implementation() == 'PyPy',
     reason='Firestore is not supported on PyPy')
-class TestFirestore:
-    """Test class Firestore APIs."""
+class TestFirestoreAsync:
+    """Test class Firestore Async APIs."""
 
     def teardown_method(self, method):
         del method
@@ -41,13 +41,13 @@ class TestFirestore:
         def evaluate():
             firebase_admin.initialize_app(testutils.MockCredential())
             with pytest.raises(ValueError):
-                firestore.client()
+                firestore_async.client()
         testutils.run_without_project_id(evaluate)
 
     def test_project_id(self):
         cred = credentials.Certificate(testutils.resource_filename('service_account.json'))
         firebase_admin.initialize_app(cred, {'projectId': 'explicit-project-id'})
-        client = firestore.client()
+        client = firestore_async.client()
         assert client is not None
         assert client.project == 'explicit-project-id'
         assert client._database == '(default)'
@@ -55,7 +55,7 @@ class TestFirestore:
     def test_project_id_with_explicit_app(self):
         cred = credentials.Certificate(testutils.resource_filename('service_account.json'))
         app = firebase_admin.initialize_app(cred, {'projectId': 'explicit-project-id'})
-        client = firestore.client(app=app)
+        client = firestore_async.client(app=app)
         assert client is not None
         assert client.project == 'explicit-project-id'
         assert client._database == '(default)'
@@ -63,7 +63,7 @@ class TestFirestore:
     def test_service_account(self):
         cred = credentials.Certificate(testutils.resource_filename('service_account.json'))
         firebase_admin.initialize_app(cred)
-        client = firestore.client()
+        client = firestore_async.client()
         assert client is not None
         assert client.project == 'mock-project-id'
         assert client._database == '(default)'
@@ -71,7 +71,7 @@ class TestFirestore:
     def test_service_account_with_explicit_app(self):
         cred = credentials.Certificate(testutils.resource_filename('service_account.json'))
         app = firebase_admin.initialize_app(cred)
-        client = firestore.client(app=app)
+        client = firestore_async.client(app=app)
         assert client is not None
         assert client.project == 'mock-project-id'
         assert client._database == '(default)'
@@ -81,14 +81,14 @@ class TestFirestore:
         cred = credentials.Certificate(testutils.resource_filename('service_account.json'))
         firebase_admin.initialize_app(cred)
         with pytest.raises(ValueError) as excinfo:
-            firestore.client(database_id=database_id)
+            firestore_async.client(database_id=database_id)
         assert str(excinfo.value) == f'database_id "{database_id}" must be a string or None.'
 
     def test_database_id(self):
         cred = credentials.Certificate(testutils.resource_filename('service_account.json'))
         firebase_admin.initialize_app(cred)
         database_id = 'mock-database-id'
-        client = firestore.client(database_id=database_id)
+        client = firestore_async.client(database_id=database_id)
         assert client is not None
         assert client.project == 'mock-project-id'
         assert client._database == 'mock-database-id'
@@ -97,7 +97,7 @@ class TestFirestore:
     def test_database_id_with_default_id(self, database_id):
         cred = credentials.Certificate(testutils.resource_filename('service_account.json'))
         firebase_admin.initialize_app(cred)
-        client = firestore.client(database_id=database_id)
+        client = firestore_async.client(database_id=database_id)
         assert client is not None
         assert client.project == 'mock-project-id'
         assert client._database == '(default)'
@@ -106,7 +106,7 @@ class TestFirestore:
         cred = credentials.Certificate(testutils.resource_filename('service_account.json'))
         app = firebase_admin.initialize_app(cred)
         database_id = 'mock-database-id'
-        client = firestore.client(app, database_id)
+        client = firestore_async.client(app, database_id)
         assert client is not None
         assert client.project == 'mock-project-id'
         assert client._database == 'mock-database-id'
@@ -116,8 +116,8 @@ class TestFirestore:
         firebase_admin.initialize_app(cred)
         database_id_1 = 'mock-database-id-1'
         database_id_2 = 'mock-database-id-2'
-        client_1 = firestore.client(database_id=database_id_1)
-        client_2 = firestore.client(database_id=database_id_2)
+        client_1 = firestore_async.client(database_id=database_id_1)
+        client_2 = firestore_async.client(database_id=database_id_2)
         assert (client_1 is not None) and (client_2 is not None)
         assert client_1 is not client_2
         assert client_1.project == 'mock-project-id'
@@ -129,8 +129,8 @@ class TestFirestore:
         cred = credentials.Certificate(testutils.resource_filename('service_account.json'))
         firebase_admin.initialize_app(cred)
         database_id = 'mock-database-id'
-        client_1 = firestore.client(database_id=database_id)
-        client_2 = firestore.client(database_id=database_id)
+        client_1 = firestore_async.client(database_id=database_id)
+        client_2 = firestore_async.client(database_id=database_id)
         assert (client_1 is not None) and (client_2 is not None)
         assert client_1 is client_2
         assert client_1.project == 'mock-project-id'
@@ -143,9 +143,9 @@ class TestFirestore:
         firebase_admin.initialize_app(cred)
         database_id_1 = ''
         database_id_2 = '(default)'
-        client_1 = firestore.client(database_id=database_id_1)
-        client_2 = firestore.client(database_id=database_id_2)
-        client_3 = firestore.client()
+        client_1 = firestore_async.client(database_id=database_id_1)
+        client_2 = firestore_async.client(database_id=database_id_2)
+        client_3 = firestore_async.client()
         assert (client_1 is not None) and (client_2 is not None) and (client_3 is not None)
         assert client_1 is client_2
         assert client_1 is client_3
@@ -159,9 +159,9 @@ class TestFirestore:
 
 
     def test_geo_point(self):
-        geo_point = firestore.GeoPoint(10, 20) # pylint: disable=no-member
+        geo_point = firestore_async.GeoPoint(10, 20) # pylint: disable=no-member
         assert geo_point.latitude == 10
         assert geo_point.longitude == 20
 
     def test_server_timestamp(self):
-        assert firestore.SERVER_TIMESTAMP is not None # pylint: disable=no-member
+        assert firestore_async.SERVER_TIMESTAMP is not None # pylint: disable=no-member

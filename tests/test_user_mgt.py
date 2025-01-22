@@ -28,6 +28,7 @@ from firebase_admin import _auth_utils
 from firebase_admin import _http_client
 from firebase_admin import _user_import
 from firebase_admin import _user_mgt
+from firebase_admin import _utils
 from tests import testutils
 
 
@@ -135,6 +136,7 @@ def _check_request(recorder, want_url, want_body=None, want_timeout=None):
     req = recorder[0]
     assert req.method == 'POST'
     assert req.url == '{0}{1}'.format(USER_MGT_URLS['PREFIX'], want_url)
+    assert req.headers['X-GOOG-API-CLIENT'] == _utils.get_metrics_header()
     if want_body:
         body = json.loads(req.body.decode())
         assert body == want_body
@@ -663,6 +665,23 @@ class TestUpdateUser:
         request = json.loads(recorder[0].body.decode())
         assert request == {'localId': 'testuser', 'validSince': int(arg)}
 
+    @pytest.mark.parametrize('arg', [['phone'], ['google.com', 'phone']])
+    def test_update_user_delete_provider(self, user_mgt_app, arg):
+        user_mgt, recorder = _instrument_user_manager(user_mgt_app, 200, '{"localId":"testuser"}')
+        user_mgt.update_user('testuser', providers_to_delete=arg)
+        request = json.loads(recorder[0].body.decode())
+        assert set(request['deleteProvider']) == set(arg)
+
+    @pytest.mark.parametrize('arg', [[], ['phone'], ['google.com'], ['google.com', 'phone']])
+    def test_update_user_delete_provider_and_phone(self, user_mgt_app, arg):
+        user_mgt, recorder = _instrument_user_manager(user_mgt_app, 200, '{"localId":"testuser"}')
+        user_mgt.update_user('testuser',
+                             providers_to_delete=arg,
+                             phone_number=auth.DELETE_ATTRIBUTE)
+        request = json.loads(recorder[0].body.decode())
+        assert 'phone' in request['deleteProvider']
+        assert len(set(request['deleteProvider'])) == len(request['deleteProvider'])
+        assert set(arg) - set(request['deleteProvider']) == set()
 
 class TestSetCustomUserClaims:
 
@@ -1195,7 +1214,7 @@ class TestUserImportHash:
             memory_cost=14, parallelization=2, block_size=10, derived_key_length=128)
         expected = {
             'hashAlgorithm': 'STANDARD_SCRYPT',
-            'memoryCost': 14,
+            'cpuMemCost': 14,
             'parallelization': 2,
             'blockSize': 10,
             'dkLen': 128,
@@ -1352,7 +1371,7 @@ class TestActionCodeSetting:
         assert parameters['continueUrl'] == data['url']
         assert parameters['canHandleCodeInApp'] == data['handle_code_in_app']
         assert parameters['dynamicLinkDomain'] == data['dynamic_link_domain']
-        assert parameters['iosBundleId'] == data['ios_bundle_id']
+        assert parameters['iOSBundleId'] == data['ios_bundle_id']
         assert parameters['androidPackageName'] == data['android_package_name']
         assert parameters['androidMinimumVersion'] == data['android_minimum_version']
         assert parameters['androidInstallApp'] == data['android_install_app']
@@ -1512,7 +1531,7 @@ class TestGenerateEmailActionLink:
             assert request['continueUrl'] == settings.url
             assert request['canHandleCodeInApp'] == settings.handle_code_in_app
             assert request['dynamicLinkDomain'] == settings.dynamic_link_domain
-            assert request['iosBundleId'] == settings.ios_bundle_id
+            assert request['iOSBundleId'] == settings.ios_bundle_id
             assert request['androidPackageName'] == settings.android_package_name
             assert request['androidMinimumVersion'] == settings.android_minimum_version
             assert request['androidInstallApp'] == settings.android_install_app
