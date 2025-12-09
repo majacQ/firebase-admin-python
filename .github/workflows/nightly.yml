@@ -29,14 +29,14 @@ jobs:
 
     steps:
     - name: Checkout source for staging
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
       with:
         ref: ${{ github.event.client_payload.ref || github.ref }}
 
     - name: Set up Python
-      uses: actions/setup-python@v1
+      uses: actions/setup-python@v5
       with:
-        python-version: 3.6
+        python-version: 3.9
 
     - name: Install dependencies
       run: |
@@ -45,6 +45,7 @@ jobs:
         pip install setuptools wheel
         pip install tensorflow
         pip install keras
+        pip install build
 
     - name: Run unit tests
       run: pytest
@@ -57,12 +58,12 @@ jobs:
 
     # Build the Python Wheel and the source distribution.
     - name: Package release artifacts
-      run: python setup.py bdist_wheel sdist
+      run: python -m build
 
     # Attach the packaged artifacts to the workflow output. These can be manually
     # downloaded for later inspection if necessary.
     - name: Archive artifacts
-      uses: actions/upload-artifact@v1
+      uses: actions/upload-artifact@v4
       with:
         name: dist
         path: dist

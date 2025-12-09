@@ -23,6 +23,7 @@ import firebase_admin
 from firebase_admin import exceptions
 from firebase_admin import project_management
 from firebase_admin import _http_client
+from firebase_admin import _utils
 from tests import testutils
 
 OPERATION_IN_PROGRESS_RESPONSE = json.dumps({
@@ -521,8 +522,9 @@ class BaseProjectManagementTest:
             self, request, expected_method, expected_url, expected_body=None):
         assert request.method == expected_method
         assert request.url == expected_url
-        client_version = 'Python/Admin/{0}'.format(firebase_admin.__version__)
-        assert request.headers['X-Client-Version'] == client_version
+        assert request.headers['X-Client-Version'] == f'Python/Admin/{firebase_admin.__version__}'
+        expected_metrics_header = _utils.get_metrics_header() + ' mock-cred-metric-tag'
+        assert request.headers['x-goog-api-client'] == expected_metrics_header
         if expected_body is None:
             assert request.body is None
         else:
@@ -543,7 +545,7 @@ class TestTimeout(BaseProjectManagementTest):
             'projectId': 'test-project-id'
         }
         app = firebase_admin.initialize_app(
-            testutils.MockCredential(), options, 'timeout-{0}'.format(timeout))
+            testutils.MockCredential(), options, f'timeout-{timeout}')
         project_management_service = project_management._get_project_management_service(app)
         assert project_management_service._client.timeout == timeout
 
@@ -818,7 +820,7 @@ class TestListAndroidApps(BaseProjectManagementTest):
         assert len(recorder) == 1
 
     def test_list_android_apps_empty_list(self):
-        recorder = self._instrument_service(statuses=[200], responses=[json.dumps(dict())])
+        recorder = self._instrument_service(statuses=[200], responses=[json.dumps({})])
 
         android_apps = project_management.list_android_apps()
 
@@ -881,7 +883,7 @@ class TestListIOSApps(BaseProjectManagementTest):
         assert len(recorder) == 1
 
     def test_list_ios_apps_empty_list(self):
-        recorder = self._instrument_service(statuses=[200], responses=[json.dumps(dict())])
+        recorder = self._instrument_service(statuses=[200], responses=[json.dumps({})])
 
         ios_apps = project_management.list_ios_apps()
 

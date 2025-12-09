@@ -17,6 +17,7 @@ from collections import namedtuple
 import os
 
 import pytest
+from google.auth.exceptions import DefaultCredentialsError
 
 import firebase_admin
 from firebase_admin import credentials
@@ -214,11 +215,11 @@ def revert_config_env(config_old):
 class TestFirebaseApp:
     """Test cases for App initialization and life cycle."""
 
-    invalid_credentials = ['', 'foo', 0, 1, dict(), list(), tuple(), True, False]
-    invalid_options = ['', 0, 1, list(), tuple(), True, False]
-    invalid_names = [None, '', 0, 1, dict(), list(), tuple(), True, False]
+    invalid_credentials = ['', 'foo', 0, 1, {}, [], tuple(), True, False]
+    invalid_options = ['', 0, 1, [], tuple(), True, False]
+    invalid_names = [None, '', 0, 1, {}, [], tuple(), True, False]
     invalid_apps = [
-        None, '', 0, 1, dict(), list(), tuple(), True, False,
+        None, '', 0, 1, {}, [], tuple(), True, False,
         firebase_admin.App('uninitialized', CREDENTIAL, {})
     ]
 
@@ -244,6 +245,16 @@ class TestFirebaseApp:
             assert isinstance(app.credential, credentials.ApplicationDefault)
         with pytest.raises(ValueError):
             firebase_admin.initialize_app(app_credential, name='myApp')
+
+    def test_app_init_with_google_auth_cred(self):
+        cred = testutils.MockGoogleCredential()
+        assert isinstance(cred, credentials.GoogleAuthCredentials)
+        app = firebase_admin.initialize_app(cred)
+        assert cred is app.credential.get_credential()
+        assert isinstance(app.credential, credentials.Base)
+        assert isinstance(app.credential, credentials._ExternalCredentials)
+        with pytest.raises(ValueError):
+            firebase_admin.initialize_app(app_credential)
 
     @pytest.mark.parametrize('cred', invalid_credentials)
     def test_app_init_with_invalid_credential(self, cred):
@@ -297,11 +308,11 @@ class TestFirebaseApp:
         variables = ['GOOGLE_CLOUD_PROJECT', 'GCLOUD_PROJECT']
         for idx, var in enumerate(variables):
             old_project_id = os.environ.get(var)
-            new_project_id = 'env-project-{0}'.format(idx)
+            new_project_id = f'env-project-{idx}'
             os.environ[var] = new_project_id
             try:
                 app = firebase_admin.initialize_app(
-                    testutils.MockCredential(), name='myApp{0}'.format(var))
+                    testutils.MockCredential(), name=f'myApp{var}')
                 assert app.project_id == new_project_id
             finally:
                 if old_project_id:
@@ -313,6 +324,27 @@ class TestFirebaseApp:
         def evaluate():
             app = firebase_admin.initialize_app(testutils.MockCredential(), name='myApp')
             assert app.project_id is None
+        testutils.run_without_project_id(evaluate)
+
+    def test_no_project_id_from_environment(self, app_credential):
+        default_env = 'GOOGLE_APPLICATION_CREDENTIALS'
+        gcloud_env = 'CLOUDSDK_CONFIG'
+        def evaluate():
+            app = firebase_admin.initialize_app(app_credential, name='myApp')
+            app._credential._g_credential = None
+            old_gcloud_var = os.environ.get(gcloud_env)
+            os.environ[gcloud_env] = ''
+            old_default_var = os.environ.get(default_env)
+            if old_default_var:
+                del os.environ[default_env]
+            with pytest.raises((AttributeError, DefaultCredentialsError)):
+                project_id = app._credential.project_id
+            project_id = app.project_id
+            if old_default_var:
+                os.environ[default_env] = old_default_var
+            if old_gcloud_var:
+                os.environ[gcloud_env] = old_gcloud_var
+            assert project_id is None
         testutils.run_without_project_id(evaluate)
 
     def test_non_string_project_id(self):
@@ -356,7 +388,7 @@ class TestFirebaseApp:
         with pytest.raises(ValueError):
             _utils.get_app_service(init_app, 'test.service', AppService)
 
-    @pytest.mark.parametrize('arg', [0, 1, True, False, 'str', list(), dict(), tuple()])
+    @pytest.mark.parametrize('arg', [0, 1, True, False, 'str', [], {}, tuple()])
     def test_app_services_invalid_arg(self, arg):
         with pytest.raises(ValueError):
             _utils.get_app_service(arg, 'test.service', AppService)

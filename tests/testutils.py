@@ -18,7 +18,7 @@ import os
 
 import pytest
 
-from google.auth import credentials
+from google.auth import credentials, compute_engine
 from google.auth import transport
 from requests import adapters
 from requests import models
@@ -33,7 +33,7 @@ def resource_filename(filename):
 
 def resource(filename):
     """Returns the contents of a test resource."""
-    with open(resource_filename(filename), 'r') as file_obj:
+    with open(resource_filename(filename), 'r', encoding='utf-8') as file_obj:
         return file_obj.read()
 
 
@@ -116,8 +116,29 @@ class MockFailedRequest(transport.Request):
 # pylint: disable=abstract-method
 class MockGoogleCredential(credentials.Credentials):
     """A mock Google authentication credential."""
+
+    def __init__(self):
+        super().__init__()
+        self.token = None
+        self._service_account_email = None
+        self._token_state = credentials.TokenState.INVALID
+
     def refresh(self, request):
         self.token = 'mock-token'
+        self._service_account_email = 'mock-email'
+        self._token_state = credentials.TokenState.FRESH
+
+    @property
+    def token_state(self):
+        return self._token_state
+
+    @property
+    def service_account_email(self):
+        return self._service_account_email
+
+    # Simulate x-goog-api-client modification in credential refresh
+    def _metric_header_for_usage(self):
+        return 'mock-cred-metric-tag'
 
 
 class MockCredential(firebase_admin.credentials.Base):
@@ -129,6 +150,35 @@ class MockCredential(firebase_admin.credentials.Base):
     def get_credential(self):
         return self._g_credential
 
+class MockGoogleComputeEngineCredential(compute_engine.Credentials):
+    """A mock Compute Engine credential"""
+
+    def __init__(self):
+        super().__init__()
+        self.token = None
+        self._service_account_email = None
+        self._token_state = credentials.TokenState.INVALID
+
+    def refresh(self, request):
+        self.token = 'mock-compute-engine-token'
+        self._service_account_email = 'mock-gce-email'
+        self._token_state = credentials.TokenState.FRESH
+
+    @property
+    def token_state(self):
+        return self._token_state
+
+    def _metric_header_for_usage(self):
+        return 'mock-gce-cred-metric-tag'
+
+class MockComputeEngineCredential(firebase_admin.credentials.Base):
+    """A mock Firebase credential implementation."""
+
+    def __init__(self):
+        self._g_credential = MockGoogleComputeEngineCredential()
+
+    def get_credential(self):
+        return self._g_credential
 
 class MockMultiRequestAdapter(adapters.HTTPAdapter):
     """A mock HTTP adapter that supports multiple responses for the Python requests module."""
@@ -162,7 +212,7 @@ class MockMultiRequestAdapter(adapters.HTTPAdapter):
 class MockAdapter(MockMultiRequestAdapter):
     """A mock HTTP adapter for the Python requests module."""
     def __init__(self, data, status, recorder):
-        super(MockAdapter, self).__init__([data], [status], recorder)
+        super().__init__([data], [status], recorder)
 
     @property
     def status(self):
@@ -171,3 +221,73 @@ class MockAdapter(MockMultiRequestAdapter):
     @property
     def data(self):
         return self._responses[0]
+
+class MockRequestBasedMultiRequestAdapter(adapters.HTTPAdapter):
+    """A mock HTTP adapter that supports multiple responses for the Python requests module.
+       The response for each incoming request should be specified in response_dict during
+       initialization. Each incoming request should contain an identifier in the its body."""
+    def __init__(self, response_dict, recorder):
+        """Constructs a MockRequestBasedMultiRequestAdapter.
+
+        Each incoming request consumes the response and status mapped to it. If no response
+        is specified for the request, the response will be 404 with an empty body.
+        """
+        adapters.HTTPAdapter.__init__(self)
+        self._current_response = 0
+        self._response_dict = dict(response_dict)
+        self._recorder = recorder
+
+    def send(self, request, **kwargs): # pylint: disable=arguments-differ
+        request._extra_kwargs = kwargs
+        self._recorder.append(request)
+        resp = models.Response()
+        resp.url = request.url
+        resp.status_code = 404 # Not found.
+        resp.raw = None
+        for req_id, pair in self._response_dict.items():
+            if req_id in str(request.body):
+                status, response = pair
+                resp.status_code = status
+                resp.raw = io.BytesIO(response.encode())
+                break
+        return resp
+
+def build_mock_condition(name, condition):
+    return {
+        'name': name,
+        'condition': condition,
+    }
+
+def build_mock_parameter(name, description, value=None,
+                         conditional_values=None, default_value=None, parameter_groups=None):
+    return {
+        'name': name,
+        'description': description,
+        'value': value,
+        'conditionalValues': conditional_values,
+        'defaultValue': default_value,
+        'parameterGroups': parameter_groups,
+    }
+
+def build_mock_conditional_value(condition_name, value):
+    return {
+        'conditionName': condition_name,
+        'value': value,
+    }
+
+def build_mock_default_value(value):
+    return {
+        'value': value,
+    }
+
+def build_mock_parameter_group(name, description, parameters):
+    return {
+        'name': name,
+        'description': description,
+        'parameters': parameters,
+    }
+
+def build_mock_version(version_number):
+    return {
+        'versionNumber': version_number,
+    }

@@ -55,7 +55,8 @@ def test_send():
                     light_off_duration_millis=200,
                     light_on_duration_millis=300
                 ),
-                notification_count=1
+                notification_count=1,
+                proxy='if_priority_lowered',
             )
         ),
         apns=messaging.APNSConfig(payload=messaging.APNSPayload(
@@ -86,7 +87,7 @@ def test_send_malformed_token():
     with pytest.raises(exceptions.InvalidArgumentError):
         messaging.send(msg, dry_run=True)
 
-def test_send_all():
+def test_send_each():
     messages = [
         messaging.Message(
             topic='foo-bar', notification=messaging.Notification('Title', 'Body')),
@@ -96,7 +97,7 @@ def test_send_all():
             token='not-a-token', notification=messaging.Notification('Title', 'Body')),
     ]
 
-    batch_response = messaging.send_all(messages, dry_run=True)
+    batch_response = messaging.send_each(messages, dry_run=True)
 
     assert batch_response.success_count == 2
     assert batch_response.failure_count == 1
@@ -117,13 +118,13 @@ def test_send_all():
     assert isinstance(response.exception, exceptions.InvalidArgumentError)
     assert response.message_id is None
 
-def test_send_all_500():
+def test_send_each_500():
     messages = []
     for msg_number in range(500):
-        topic = 'foo-bar-{0}'.format(msg_number % 10)
+        topic = f'foo-bar-{msg_number % 10}'
         messages.append(messaging.Message(topic=topic))
 
-    batch_response = messaging.send_all(messages, dry_run=True)
+    batch_response = messaging.send_each(messages, dry_run=True)
 
     assert batch_response.success_count == 500
     assert batch_response.failure_count == 0
@@ -133,12 +134,12 @@ def test_send_all_500():
         assert response.exception is None
         assert re.match('^projects/.*/messages/.*$', response.message_id)
 
-def test_send_multicast():
+def test_send_each_for_multicast():
     multicast = messaging.MulticastMessage(
         notification=messaging.Notification('Title', 'Body'),
         tokens=['not-a-token', 'also-not-a-token'])
 
-    batch_response = messaging.send_multicast(multicast)
+    batch_response = messaging.send_each_for_multicast(multicast)
 
     assert batch_response.success_count == 0
     assert batch_response.failure_count == 2
@@ -155,3 +156,68 @@ def test_subscribe():
 def test_unsubscribe():
     resp = messaging.unsubscribe_from_topic(_REGISTRATION_TOKEN, 'mock-topic')
     assert resp.success_count + resp.failure_count == 1
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_send_each_async():
+    messages = [
+        messaging.Message(
+            topic='foo-bar', notification=messaging.Notification('Title', 'Body')),
+        messaging.Message(
+            topic='foo-bar', notification=messaging.Notification('Title', 'Body')),
+        messaging.Message(
+            token='not-a-token', notification=messaging.Notification('Title', 'Body')),
+    ]
+
+    batch_response = await messaging.send_each_async(messages, dry_run=True)
+
+    assert batch_response.success_count == 2
+    assert batch_response.failure_count == 1
+    assert len(batch_response.responses) == 3
+
+    response = batch_response.responses[0]
+    assert response.success is True
+    assert response.exception is None
+    assert re.match('^projects/.*/messages/.*$', response.message_id)
+
+    response = batch_response.responses[1]
+    assert response.success is True
+    assert response.exception is None
+    assert re.match('^projects/.*/messages/.*$', response.message_id)
+
+    response = batch_response.responses[2]
+    assert response.success is False
+    assert isinstance(response.exception, exceptions.InvalidArgumentError)
+    assert response.message_id is None
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_send_each_async_500():
+    messages = []
+    for msg_number in range(500):
+        topic = f'foo-bar-{msg_number % 10}'
+        messages.append(messaging.Message(topic=topic))
+
+    batch_response = await messaging.send_each_async(messages, dry_run=True)
+
+    assert batch_response.success_count == 500
+    assert batch_response.failure_count == 0
+    assert len(batch_response.responses) == 500
+    for response in batch_response.responses:
+        assert response.success is True
+        assert response.exception is None
+        assert re.match('^projects/.*/messages/.*$', response.message_id)
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_send_each_for_multicast_async():
+    multicast = messaging.MulticastMessage(
+        notification=messaging.Notification('Title', 'Body'),
+        tokens=['not-a-token', 'also-not-a-token'])
+
+    batch_response = await messaging.send_each_for_multicast_async(multicast)
+
+    assert batch_response.success_count == 0
+    assert batch_response.failure_count == 2
+    assert len(batch_response.responses) == 2
+    for response in batch_response.responses:
+        assert response.success is False
+        assert response.exception is not None
+        assert response.message_id is None

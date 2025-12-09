@@ -20,6 +20,7 @@ import firebase_admin
 from firebase_admin import exceptions
 from firebase_admin import instance_id
 from firebase_admin import _http_client
+from firebase_admin import _utils
 from tests import testutils
 
 
@@ -64,8 +65,14 @@ class TestDeleteInstanceId:
             testutils.MockAdapter(payload, status, recorder))
         return iid_service, recorder
 
+    def _assert_request(self, request, expected_method, expected_url):
+        assert request.method == expected_method
+        assert request.url == expected_url
+        expected_metrics_header = _utils.get_metrics_header() + ' mock-cred-metric-tag'
+        assert request.headers['x-goog-api-client'] == expected_metrics_header
+
     def _get_url(self, project_id, iid):
-        return instance_id._IID_SERVICE_URL + 'project/{0}/instanceId/{1}'.format(project_id, iid)
+        return instance_id._IID_SERVICE_URL + f'project/{project_id}/instanceId/{iid}'
 
     def test_no_project_id(self):
         def evaluate():
@@ -86,8 +93,8 @@ class TestDeleteInstanceId:
         _, recorder = self._instrument_iid_service(app)
         instance_id.delete_instance_id('test_iid')
         assert len(recorder) == 1
-        assert recorder[0].method == 'DELETE'
-        assert recorder[0].url == self._get_url('explicit-project-id', 'test_iid')
+        self._assert_request(
+            recorder[0], 'DELETE', self._get_url('explicit-project-id', 'test_iid'))
 
     def test_delete_instance_id_with_explicit_app(self):
         cred = testutils.MockCredential()
@@ -95,8 +102,8 @@ class TestDeleteInstanceId:
         _, recorder = self._instrument_iid_service(app)
         instance_id.delete_instance_id('test_iid', app)
         assert len(recorder) == 1
-        assert recorder[0].method == 'DELETE'
-        assert recorder[0].url == self._get_url('explicit-project-id', 'test_iid')
+        self._assert_request(
+            recorder[0], 'DELETE', self._get_url('explicit-project-id', 'test_iid'))
 
     @pytest.mark.parametrize('status', http_errors.keys())
     def test_delete_instance_id_error(self, status):
@@ -114,8 +121,8 @@ class TestDeleteInstanceId:
         else:
             # 401 responses are automatically retried by google-auth
             assert len(recorder) == 3
-        assert recorder[0].method == 'DELETE'
-        assert recorder[0].url == self._get_url('explicit-project-id', 'test_iid')
+        self._assert_request(
+            recorder[0], 'DELETE', self._get_url('explicit-project-id', 'test_iid'))
 
     def test_delete_instance_id_unexpected_error(self):
         cred = testutils.MockCredential()
@@ -124,15 +131,14 @@ class TestDeleteInstanceId:
         with pytest.raises(exceptions.UnknownError) as excinfo:
             instance_id.delete_instance_id('test_iid')
         url = self._get_url('explicit-project-id', 'test_iid')
-        message = 'Instance ID "test_iid": 501 Server Error: None for url: {0}'.format(url)
+        message = f'Instance ID "test_iid": 501 Server Error: None for url: {url}'
         assert str(excinfo.value) == message
         assert excinfo.value.cause is not None
         assert excinfo.value.http_response is not None
         assert len(recorder) == 1
-        assert recorder[0].method == 'DELETE'
-        assert recorder[0].url == url
+        self._assert_request(recorder[0], 'DELETE', url)
 
-    @pytest.mark.parametrize('iid', [None, '', 0, 1, True, False, list(), dict(), tuple()])
+    @pytest.mark.parametrize('iid', [None, '', 0, 1, True, False, [], {}, tuple()])
     def test_invalid_instance_id(self, iid):
         cred = testutils.MockCredential()
         app = firebase_admin.initialize_app(cred, {'projectId': 'explicit-project-id'})

@@ -14,25 +14,28 @@
 
 """Test cases for the firebase_admin.messaging module."""
 import datetime
+from itertools import chain, repeat
 import json
 import numbers
+import httpx
+import respx
 
-from googleapiclient import http
-from googleapiclient import _helpers
 import pytest
 
 import firebase_admin
 from firebase_admin import exceptions
 from firebase_admin import messaging
 from firebase_admin import _http_client
+from firebase_admin import _utils
 from tests import testutils
 
 
-NON_STRING_ARGS = [list(), tuple(), dict(), True, False, 1, 0]
-NON_DICT_ARGS = ['', list(), tuple(), True, False, 1, 0, {1: 'foo'}, {'foo': 1}]
-NON_OBJECT_ARGS = [list(), tuple(), dict(), 'foo', 0, 1, True, False]
-NON_LIST_ARGS = ['', tuple(), dict(), True, False, 1, 0, [1], ['foo', 1]]
-NON_UINT_ARGS = ['1.23s', list(), tuple(), dict(), -1.23]
+NON_STRING_ARGS = [[], tuple(), {}, True, False, 1, 0]
+NON_DICT_ARGS = ['', [], tuple(), True, False, 1, 0, {1: 'foo'}, {'foo': 1}]
+NON_OBJECT_ARGS = [[], tuple(), {}, 'foo', 0, 1, True, False]
+NON_LIST_ARGS = ['', tuple(), {}, True, False, 1, 0, [1], ['foo', 1]]
+NON_UINT_ARGS = ['1.23s', [], tuple(), {}, -1.23]
+NON_BOOL_ARGS = ['', [], tuple(), {}, 1, 0, [1], ['foo', 1], {1: 'foo'}, {'foo': 1}]
 HTTP_ERROR_CODES = {
     400: exceptions.InvalidArgumentError,
     403: exceptions.PermissionDeniedError,
@@ -249,7 +252,8 @@ class TestFcmOptionEncoder:
                 topic='topic',
                 fcm_options=messaging.FCMOptions('message-label'),
                 android=messaging.AndroidConfig(
-                    fcm_options=messaging.AndroidFCMOptions('android-label')),
+                    fcm_options=messaging.AndroidFCMOptions('android-label'),
+                    direct_boot_ok=False),
                 apns=messaging.APNSConfig(fcm_options=
                                           messaging.APNSFCMOptions(
                                               analytics_label='apns-label',
@@ -259,7 +263,8 @@ class TestFcmOptionEncoder:
             {
                 'topic': 'topic',
                 'fcm_options': {'analytics_label': 'message-label'},
-                'android': {'fcm_options': {'analytics_label': 'android-label'}},
+                'android': {'fcm_options': {'analytics_label': 'android-label'},
+                            'direct_boot_ok': False},
                 'apns': {'fcm_options': {'analytics_label': 'apns-label',
                                          'image': 'https://images.unsplash.com/photo-14944386399'
                                                   '46-1ebd1d20bf85?fit=crop&w=900&q=60'}},
@@ -317,6 +322,20 @@ class TestAndroidConfigEncoder:
             check_encoding(messaging.Message(
                 topic='topic', android=messaging.AndroidConfig(data=data)))
 
+    @pytest.mark.parametrize('data', NON_STRING_ARGS)
+    def test_invalid_analytics_label(self, data):
+        with pytest.raises(ValueError):
+            check_encoding(messaging.Message(
+                topic='topic', android=messaging.AndroidConfig(
+                    fcm_options=messaging.AndroidFCMOptions(analytics_label=data))))
+
+    @pytest.mark.parametrize('data', NON_BOOL_ARGS)
+    def test_invalid_direct_boot_ok(self, data):
+        with pytest.raises(ValueError):
+            check_encoding(messaging.Message(
+                topic='topic', android=messaging.AndroidConfig(direct_boot_ok=data)))
+
+
     def test_android_config(self):
         msg = messaging.Message(
             topic='topic',
@@ -326,7 +345,8 @@ class TestAndroidConfigEncoder:
                 priority='high',
                 ttl=123,
                 data={'k1': 'v1', 'k2': 'v2'},
-                fcm_options=messaging.AndroidFCMOptions('analytics_label_v1')
+                fcm_options=messaging.AndroidFCMOptions('analytics_label_v1'),
+                direct_boot_ok=True,
             )
         )
         expected = {
@@ -343,6 +363,7 @@ class TestAndroidConfigEncoder:
                 'fcm_options': {
                     'analytics_label': 'analytics_label_v1',
                 },
+                'direct_boot_ok': True,
             },
         }
         check_encoding(msg, expected)
@@ -480,7 +501,7 @@ class TestAndroidNotificationEncoder:
         excinfo = self._check_notification(notification)
         assert str(excinfo.value) == 'AndroidNotification.channel_id must be a string.'
 
-    @pytest.mark.parametrize('timestamp', [100, '', 'foo', {}, [], list(), dict()])
+    @pytest.mark.parametrize('timestamp', [100, '', 'foo', {}, []])
     def test_invalid_event_timestamp(self, timestamp):
         notification = messaging.AndroidNotification(event_timestamp=timestamp)
         excinfo = self._check_notification(notification)
@@ -515,6 +536,20 @@ class TestAndroidNotificationEncoder:
             expected = 'AndroidNotification.visibility must be a non-empty string.'
         assert str(excinfo.value) == expected
 
+    @pytest.mark.parametrize('proxy', NON_STRING_ARGS + ['foo'])
+    def test_invalid_proxy(self, proxy):
+        notification = messaging.AndroidNotification(proxy=proxy)
+        excinfo = self._check_notification(notification)
+        if isinstance(proxy, str):
+            if not proxy:
+                expected = 'AndroidNotification.proxy must be a non-empty string.'
+            else:
+                expected = ('AndroidNotification.proxy must be "allow", "deny" or'
+                            ' "if_priority_lowered".')
+        else:
+            expected = 'AndroidNotification.proxy must be a non-empty string.'
+        assert str(excinfo.value) == expected
+
     @pytest.mark.parametrize('vibrate_timings', ['', 1, True, 'msec', ['500', 500], [0, 'abc']])
     def test_invalid_vibrate_timings_millis(self, vibrate_timings):
         notification = messaging.AndroidNotification(vibrate_timings_millis=vibrate_timings)
@@ -533,7 +568,7 @@ class TestAndroidNotificationEncoder:
         expected = 'AndroidNotification.vibrate_timings_millis must not be negative.'
         assert str(excinfo.value) == expected
 
-    @pytest.mark.parametrize('notification_count', ['', 'foo', list(), tuple(), dict()])
+    @pytest.mark.parametrize('notification_count', ['', 'foo', [], tuple(), {}])
     def test_invalid_notification_count(self, notification_count):
         notification = messaging.AndroidNotification(notification_count=notification_count)
         excinfo = self._check_notification(notification)
@@ -560,6 +595,7 @@ class TestAndroidNotificationEncoder:
                         light_off_duration_millis=300,
                     ),
                     default_light_settings=False, visibility='public', notification_count=1,
+                    proxy='if_priority_lowered',
                 )
             )
         )
@@ -600,6 +636,7 @@ class TestAndroidNotificationEncoder:
                     'default_light_settings': False,
                     'visibility': 'PUBLIC',
                     'notification_count': 1,
+                    'proxy': 'IF_PRIORITY_LOWERED'
                 },
             },
         }
@@ -902,19 +939,19 @@ class TestWebpushNotificationEncoder:
         excinfo = self._check_notification(notification)
         assert str(excinfo.value) == 'WebpushNotification.tag must be a string.'
 
-    @pytest.mark.parametrize('data', ['', 'foo', list(), tuple(), dict()])
+    @pytest.mark.parametrize('data', ['', 'foo', [], tuple(), {}])
     def test_invalid_timestamp(self, data):
         notification = messaging.WebpushNotification(timestamp_millis=data)
         excinfo = self._check_notification(notification)
         assert str(excinfo.value) == 'WebpushNotification.timestamp_millis must be a number.'
 
-    @pytest.mark.parametrize('data', ['', list(), tuple(), True, False, 1, 0])
+    @pytest.mark.parametrize('data', ['', [], tuple(), True, False, 1, 0])
     def test_invalid_custom_data(self, data):
         notification = messaging.WebpushNotification(custom_data=data)
         excinfo = self._check_notification(notification)
         assert str(excinfo.value) == 'WebpushNotification.custom_data must be a dict.'
 
-    @pytest.mark.parametrize('data', ['', dict(), tuple(), True, False, 1, 0, [1, 2]])
+    @pytest.mark.parametrize('data', ['', {}, tuple(), True, False, 1, 0, [1, 2]])
     def test_invalid_actions(self, data):
         notification = messaging.WebpushNotification(actions=data)
         excinfo = self._check_notification(notification)
@@ -1058,7 +1095,8 @@ class TestAPNSConfigEncoder:
             topic='topic',
             apns=messaging.APNSConfig(
                 headers={'h1': 'v1', 'h2': 'v2'},
-                fcm_options=messaging.APNSFCMOptions('analytics_label_v1')
+                fcm_options=messaging.APNSFCMOptions('analytics_label_v1'),
+                live_activity_token='test_token_string'
             ),
         )
         expected = {
@@ -1071,6 +1109,7 @@ class TestAPNSConfigEncoder:
                 'fcm_options': {
                     'analytics_label': 'analytics_label_v1',
                 },
+                'live_activity_token': 'test_token_string',
             },
         }
         check_encoding(msg, expected)
@@ -1133,7 +1172,7 @@ class TestApsEncoder:
         expected = 'Aps.alert must be a string or an instance of ApsAlert class.'
         assert str(excinfo.value) == expected
 
-    @pytest.mark.parametrize('data', [list(), tuple(), dict(), 'foo'])
+    @pytest.mark.parametrize('data', [[], tuple(), {}, 'foo'])
     def test_invalid_badge(self, data):
         aps = messaging.Aps(badge=data)
         with pytest.raises(ValueError) as excinfo:
@@ -1165,7 +1204,7 @@ class TestApsEncoder:
         expected = 'Aps.thread_id must be a string.'
         assert str(excinfo.value) == expected
 
-    @pytest.mark.parametrize('data', ['', list(), tuple(), True, False, 1, 0, ])
+    @pytest.mark.parametrize('data', ['', [], tuple(), True, False, 1, 0, ])
     def test_invalid_custom_data_dict(self, data):
         if isinstance(data, dict):
             return
@@ -1270,7 +1309,7 @@ class TestApsSoundEncoder:
         expected = 'CriticalSound.name must be a non-empty string.'
         assert str(excinfo.value) == expected
 
-    @pytest.mark.parametrize('data', [list(), tuple(), dict(), 'foo'])
+    @pytest.mark.parametrize('data', [[], tuple(), {}, 'foo'])
     def test_invalid_volume(self, data):
         sound = messaging.CriticalSound(name='default', volume=data)
         excinfo = self._check_sound(sound)
@@ -1567,7 +1606,7 @@ class TestApsAlertEncoder:
 
 class TestTimeout:
 
-    def teardown(self):
+    def teardown_method(self):
         testutils.cleanup_apps()
 
     def _instrument_service(self, url, response):
@@ -1620,7 +1659,7 @@ class TestTimeout:
 class TestSend:
 
     _DEFAULT_RESPONSE = json.dumps({'name': 'message-id'})
-    _CLIENT_VERSION = 'fire-admin-python/{0}'.format(firebase_admin.__version__)
+    _CLIENT_VERSION = f'fire-admin-python/{firebase_admin.__version__}'
 
     @classmethod
     def setup_class(cls):
@@ -1640,6 +1679,19 @@ class TestSend:
             'https://fcm.googleapis.com',
             testutils.MockAdapter(payload, status, recorder))
         return fcm_service, recorder
+
+
+    def _assert_request(self, request, expected_method, expected_url, expected_body=None):
+        assert request.method == expected_method
+        assert request.url == expected_url
+        assert request.headers['X-GOOG-API-FORMAT-VERSION'] == '2'
+        assert request.headers['X-FIREBASE-CLIENT'] == self._CLIENT_VERSION
+        expected_metrics_header = _utils.get_metrics_header() + ' mock-cred-metric-tag'
+        assert request.headers['x-goog-api-client'] == expected_metrics_header
+        if expected_body is None:
+            assert request.body is None
+        else:
+            assert json.loads(request.body.decode()) == expected_body
 
     def _get_url(self, project_id):
         return messaging._MessagingService.FCM_URL.format(project_id)
@@ -1663,15 +1715,11 @@ class TestSend:
         msg_id = messaging.send(msg, dry_run=True)
         assert msg_id == 'message-id'
         assert len(recorder) == 1
-        assert recorder[0].method == 'POST'
-        assert recorder[0].url == self._get_url('explicit-project-id')
-        assert recorder[0].headers['X-GOOG-API-FORMAT-VERSION'] == '2'
-        assert recorder[0].headers['X-FIREBASE-CLIENT'] == self._CLIENT_VERSION
         body = {
             'message': messaging._MessagingService.encode_message(msg),
             'validate_only': True,
         }
-        assert json.loads(recorder[0].body.decode()) == body
+        self._assert_request(recorder[0], 'POST', self._get_url('explicit-project-id'), body)
 
     def test_send(self):
         _, recorder = self._instrument_messaging_service()
@@ -1679,12 +1727,8 @@ class TestSend:
         msg_id = messaging.send(msg)
         assert msg_id == 'message-id'
         assert len(recorder) == 1
-        assert recorder[0].method == 'POST'
-        assert recorder[0].url == self._get_url('explicit-project-id')
-        assert recorder[0].headers['X-GOOG-API-FORMAT-VERSION'] == '2'
-        assert recorder[0].headers['X-FIREBASE-CLIENT'] == self._CLIENT_VERSION
         body = {'message': messaging._MessagingService.encode_message(msg)}
-        assert json.loads(recorder[0].body.decode()) == body
+        self._assert_request(recorder[0], 'POST', self._get_url('explicit-project-id'), body)
 
     @pytest.mark.parametrize('status,exc_type', HTTP_ERROR_CODES.items())
     def test_send_error(self, status, exc_type):
@@ -1692,15 +1736,11 @@ class TestSend:
         msg = messaging.Message(topic='foo')
         with pytest.raises(exc_type) as excinfo:
             messaging.send(msg)
-        expected = 'Unexpected HTTP response with status: {0}; body: {{}}'.format(status)
+        expected = f'Unexpected HTTP response with status: {status}; body: {{}}'
         check_exception(excinfo.value, expected, status)
         assert len(recorder) == 1
-        assert recorder[0].method == 'POST'
-        assert recorder[0].url == self._get_url('explicit-project-id')
-        assert recorder[0].headers['X-GOOG-API-FORMAT-VERSION'] == '2'
-        assert recorder[0].headers['X-FIREBASE-CLIENT'] == self._CLIENT_VERSION
         body = {'message': messaging._MessagingService.JSON_ENCODER.default(msg)}
-        assert json.loads(recorder[0].body.decode()) == body
+        self._assert_request(recorder[0], 'POST', self._get_url('explicit-project-id'), body)
 
     @pytest.mark.parametrize('status', HTTP_ERROR_CODES)
     def test_send_detailed_error(self, status):
@@ -1716,10 +1756,8 @@ class TestSend:
             messaging.send(msg)
         check_exception(excinfo.value, 'test error', status)
         assert len(recorder) == 1
-        assert recorder[0].method == 'POST'
-        assert recorder[0].url == self._get_url('explicit-project-id')
         body = {'message': messaging._MessagingService.JSON_ENCODER.default(msg)}
-        assert json.loads(recorder[0].body.decode()) == body
+        self._assert_request(recorder[0], 'POST', self._get_url('explicit-project-id'), body)
 
     @pytest.mark.parametrize('status', HTTP_ERROR_CODES)
     def test_send_canonical_error_code(self, status):
@@ -1735,10 +1773,8 @@ class TestSend:
             messaging.send(msg)
         check_exception(excinfo.value, 'test error', status)
         assert len(recorder) == 1
-        assert recorder[0].method == 'POST'
-        assert recorder[0].url == self._get_url('explicit-project-id')
         body = {'message': messaging._MessagingService.JSON_ENCODER.default(msg)}
-        assert json.loads(recorder[0].body.decode()) == body
+        self._assert_request(recorder[0], 'POST', self._get_url('explicit-project-id'), body)
 
     @pytest.mark.parametrize('status', HTTP_ERROR_CODES)
     @pytest.mark.parametrize('fcm_error_code, exc_type', FCM_ERROR_CODES.items())
@@ -1761,10 +1797,8 @@ class TestSend:
             messaging.send(msg)
         check_exception(excinfo.value, 'test error', status)
         assert len(recorder) == 1
-        assert recorder[0].method == 'POST'
-        assert recorder[0].url == self._get_url('explicit-project-id')
         body = {'message': messaging._MessagingService.JSON_ENCODER.default(msg)}
-        assert json.loads(recorder[0].body.decode()) == body
+        self._assert_request(recorder[0], 'POST', self._get_url('explicit-project-id'), body)
 
     @pytest.mark.parametrize('status', HTTP_ERROR_CODES)
     def test_send_unknown_fcm_error_code(self, status):
@@ -1786,23 +1820,11 @@ class TestSend:
             messaging.send(msg)
         check_exception(excinfo.value, 'test error', status)
         assert len(recorder) == 1
-        assert recorder[0].method == 'POST'
-        assert recorder[0].url == self._get_url('explicit-project-id')
         body = {'message': messaging._MessagingService.JSON_ENCODER.default(msg)}
-        assert json.loads(recorder[0].body.decode()) == body
+        self._assert_request(recorder[0], 'POST', self._get_url('explicit-project-id'), body)
 
 
-class _HttpMockException:
-
-    def __init__(self, exc):
-        self._exc = exc
-
-    def request(self, url, **kwargs):
-        raise self._exc
-
-
-class TestBatch:
-
+class TestSendEach():
     @classmethod
     def setup_class(cls):
         cred = testutils.MockCredential()
@@ -1812,48 +1834,27 @@ class TestBatch:
     def teardown_class(cls):
         testutils.cleanup_apps()
 
-    def _instrument_batch_messaging_service(self, app=None, status=200, payload='', exc=None):
+    def _instrument_messaging_service(self, response_dict, app=None):
         if not app:
             app = firebase_admin.get_app()
-
         fcm_service = messaging._get_messaging_service(app)
-        if exc:
-            fcm_service._transport = _HttpMockException(exc)
-        else:
-            if status == 200:
-                content_type = 'multipart/mixed; boundary=boundary'
-            else:
-                content_type = 'application/json'
-            fcm_service._transport = http.HttpMockSequence([
-                ({'status': str(status), 'content-type': content_type}, payload),
-            ])
-        return fcm_service
-
-    def _batch_payload(self, payloads):
-        # payloads should be a list of (status_code, content) tuples
-        payload = ''
-        _playload_format = """--boundary\r\nContent-Type: application/http\r\n\
-Content-ID: <uuid + {}>\r\n\r\nHTTP/1.1 {} Success\r\n\
-Content-Type: application/json; charset=UTF-8\r\n\r\n{}\r\n\r\n"""
-        for (index, (status_code, content)) in enumerate(payloads):
-            payload += _playload_format.format(str(index + 1), str(status_code), content)
-        payload += '--boundary--'
-        return payload
-
-
-class TestSendAll(TestBatch):
+        recorder = []
+        fcm_service._client.session.mount(
+            'https://fcm.googleapis.com',
+            testutils.MockRequestBasedMultiRequestAdapter(response_dict, recorder))
+        return fcm_service, recorder
 
     def test_no_project_id(self):
         def evaluate():
             app = firebase_admin.initialize_app(testutils.MockCredential(), name='no_project_id')
             with pytest.raises(ValueError):
-                messaging.send_all([messaging.Message(topic='foo')], app=app)
+                messaging.send_each([messaging.Message(topic='foo')], app=app)
         testutils.run_without_project_id(evaluate)
 
     @pytest.mark.parametrize('msg', NON_LIST_ARGS)
-    def test_invalid_send_all(self, msg):
+    def test_invalid_send_each(self, msg):
         with pytest.raises(ValueError) as excinfo:
-            messaging.send_all(msg)
+            messaging.send_each(msg)
         if isinstance(msg, list):
             expected = 'Message must be an instance of messaging.Message class.'
             assert str(excinfo.value) == expected
@@ -1864,39 +1865,217 @@ class TestSendAll(TestBatch):
     def test_invalid_over_500(self):
         msg = messaging.Message(topic='foo')
         with pytest.raises(ValueError) as excinfo:
-            messaging.send_all([msg for _ in range(0, 501)])
+            messaging.send_each([msg for _ in range(0, 501)])
         expected = 'messages must not contain more than 500 elements.'
         assert str(excinfo.value) == expected
 
-    def test_send_all(self):
-        payload = json.dumps({'name': 'message-id'})
-        _ = self._instrument_batch_messaging_service(
-            payload=self._batch_payload([(200, payload), (200, payload)]))
-        msg = messaging.Message(topic='foo')
-        batch_response = messaging.send_all([msg, msg], dry_run=True)
+    def test_send_each(self):
+        payload1 = json.dumps({'name': 'message-id1'})
+        payload2 = json.dumps({'name': 'message-id2'})
+        _ = self._instrument_messaging_service(
+            response_dict={'foo1': [200, payload1], 'foo2': [200, payload2]})
+        msg1 = messaging.Message(topic='foo1')
+        msg2 = messaging.Message(topic='foo2')
+        batch_response = messaging.send_each([msg1, msg2], dry_run=True)
         assert batch_response.success_count == 2
         assert batch_response.failure_count == 0
         assert len(batch_response.responses) == 2
-        assert [r.message_id for r in batch_response.responses] == ['message-id', 'message-id']
-        assert all([r.success for r in batch_response.responses])
-        assert not any([r.exception for r in batch_response.responses])
+        assert [r.message_id for r in batch_response.responses] == ['message-id1', 'message-id2']
+        assert all(r.success for r in batch_response.responses)
+        assert not any(r.exception for r in batch_response.responses)
 
-    def test_send_all_with_positional_param_enforcement(self):
-        payload = json.dumps({'name': 'message-id'})
-        _ = self._instrument_batch_messaging_service(
-            payload=self._batch_payload([(200, payload), (200, payload)]))
-        msg = messaging.Message(topic='foo')
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_send_each_async(self):
+        responses = [
+            respx.MockResponse(200, http_version='HTTP/2', json={'name': 'message-id1'}),
+            respx.MockResponse(200, http_version='HTTP/2', json={'name': 'message-id2'}),
+            respx.MockResponse(200, http_version='HTTP/2', json={'name': 'message-id3'}),
+        ]
+        msg1 = messaging.Message(topic='foo1')
+        msg2 = messaging.Message(topic='foo2')
+        msg3 = messaging.Message(topic='foo3')
+        route = respx.request(
+            'POST',
+            'https://fcm.googleapis.com/v1/projects/explicit-project-id/messages:send'
+        ).mock(side_effect=responses)
 
-        enforcement = _helpers.positional_parameters_enforcement
-        _helpers.positional_parameters_enforcement = _helpers.POSITIONAL_EXCEPTION
-        try:
-            batch_response = messaging.send_all([msg, msg], dry_run=True)
-            assert batch_response.success_count == 2
-        finally:
-            _helpers.positional_parameters_enforcement = enforcement
+        batch_response = await messaging.send_each_async([msg1, msg2, msg3], dry_run=True)
+
+        assert batch_response.success_count == 3
+        assert batch_response.failure_count == 0
+        assert len(batch_response.responses) == 3
+        assert [r.message_id for r in batch_response.responses] \
+            == ['message-id1', 'message-id2', 'message-id3']
+        assert all(r.success for r in batch_response.responses)
+        assert not any(r.exception for r in batch_response.responses)
+
+        assert route.call_count == 3
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_send_each_async_error_401_fail_auth_retry(self):
+        payload = json.dumps({
+            'error': {
+                'status': 'UNAUTHENTICATED',
+                'message': 'test unauthenticated error',
+                'details': [
+                    {
+                        '@type': 'type.googleapis.com/google.firebase.fcm.v1.FcmError',
+                        'errorCode': 'SOME_UNKNOWN_CODE',
+                    },
+                ],
+            }
+        })
+
+        responses = repeat(respx.MockResponse(401, http_version='HTTP/2', content=payload))
+
+        msg1 = messaging.Message(topic='foo1')
+        route = respx.request(
+            'POST',
+            'https://fcm.googleapis.com/v1/projects/explicit-project-id/messages:send'
+        ).mock(side_effect=responses)
+        batch_response = await messaging.send_each_async([msg1], dry_run=True)
+
+        assert route.call_count == 3
+        assert batch_response.success_count == 0
+        assert batch_response.failure_count == 1
+        assert len(batch_response.responses) == 1
+        exception = batch_response.responses[0].exception
+        assert isinstance(exception, exceptions.UnauthenticatedError)
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_send_each_async_error_401_pass_on_auth_retry(self):
+        payload = json.dumps({
+            'error': {
+                'status': 'UNAUTHENTICATED',
+                'message': 'test unauthenticated error',
+                'details': [
+                    {
+                        '@type': 'type.googleapis.com/google.firebase.fcm.v1.FcmError',
+                        'errorCode': 'SOME_UNKNOWN_CODE',
+                    },
+                ],
+            }
+        })
+        responses = [
+            respx.MockResponse(401, http_version='HTTP/2', content=payload),
+            respx.MockResponse(200, http_version='HTTP/2', json={'name': 'message-id1'}),
+        ]
+
+        msg1 = messaging.Message(topic='foo1')
+        route = respx.request(
+            'POST',
+            'https://fcm.googleapis.com/v1/projects/explicit-project-id/messages:send'
+        ).mock(side_effect=responses)
+        batch_response = await messaging.send_each_async([msg1], dry_run=True)
+
+        assert route.call_count == 2
+        assert batch_response.success_count == 1
+        assert batch_response.failure_count == 0
+        assert len(batch_response.responses) == 1
+        assert [r.message_id for r in batch_response.responses] == ['message-id1']
+        assert all(r.success for r in batch_response.responses)
+        assert not any(r.exception for r in batch_response.responses)
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_send_each_async_error_500_fail_retry_config(self):
+        payload = json.dumps({
+            'error': {
+                'status': 'INTERNAL',
+                'message': 'test INTERNAL error',
+                'details': [
+                    {
+                        '@type': 'type.googleapis.com/google.firebase.fcm.v1.FcmError',
+                        'errorCode': 'SOME_UNKNOWN_CODE',
+                    },
+                ],
+            }
+        })
+
+        responses = repeat(respx.MockResponse(500, http_version='HTTP/2', content=payload))
+
+        msg1 = messaging.Message(topic='foo1')
+        route = respx.request(
+            'POST',
+            'https://fcm.googleapis.com/v1/projects/explicit-project-id/messages:send'
+        ).mock(side_effect=responses)
+        batch_response = await messaging.send_each_async([msg1], dry_run=True)
+
+        assert route.call_count == 5
+        assert batch_response.success_count == 0
+        assert batch_response.failure_count == 1
+        assert len(batch_response.responses) == 1
+        exception = batch_response.responses[0].exception
+        assert isinstance(exception, exceptions.InternalError)
+
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_send_each_async_error_500_pass_on_retry_config(self):
+        payload = json.dumps({
+            'error': {
+                'status': 'INTERNAL',
+                'message': 'test INTERNAL error',
+                'details': [
+                    {
+                        '@type': 'type.googleapis.com/google.firebase.fcm.v1.FcmError',
+                        'errorCode': 'SOME_UNKNOWN_CODE',
+                    },
+                ],
+            }
+        })
+        responses = chain(
+            [
+                respx.MockResponse(500, http_version='HTTP/2', content=payload),
+                respx.MockResponse(500, http_version='HTTP/2', content=payload),
+                respx.MockResponse(500, http_version='HTTP/2', content=payload),
+                respx.MockResponse(500, http_version='HTTP/2', content=payload),
+                respx.MockResponse(200, http_version='HTTP/2', json={'name': 'message-id1'}),
+            ],
+        )
+
+        msg1 = messaging.Message(topic='foo1')
+        route = respx.request(
+            'POST',
+            'https://fcm.googleapis.com/v1/projects/explicit-project-id/messages:send'
+        ).mock(side_effect=responses)
+        batch_response = await messaging.send_each_async([msg1], dry_run=True)
+
+        assert route.call_count == 5
+        assert batch_response.success_count == 1
+        assert batch_response.failure_count == 0
+        assert len(batch_response.responses) == 1
+        assert [r.message_id for r in batch_response.responses] == ['message-id1']
+        assert all(r.success for r in batch_response.responses)
+        assert not any(r.exception for r in batch_response.responses)
+
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_send_each_async_request_error(self):
+        responses = httpx.ConnectError("Test request error", request=httpx.Request(
+            'POST',
+            'https://fcm.googleapis.com/v1/projects/explicit-project-id/messages:send'))
+
+        msg1 = messaging.Message(topic='foo1')
+        route = respx.request(
+            'POST',
+            'https://fcm.googleapis.com/v1/projects/explicit-project-id/messages:send'
+        ).mock(side_effect=responses)
+        batch_response = await messaging.send_each_async([msg1], dry_run=True)
+
+        assert route.call_count == 1
+        assert batch_response.success_count == 0
+        assert batch_response.failure_count == 1
+        assert len(batch_response.responses) == 1
+        exception = batch_response.responses[0].exception
+        assert isinstance(exception, exceptions.UnavailableError)
 
     @pytest.mark.parametrize('status', HTTP_ERROR_CODES)
-    def test_send_all_detailed_error(self, status):
+    def test_send_each_detailed_error(self, status):
         success_payload = json.dumps({'name': 'message-id'})
         error_payload = json.dumps({
             'error': {
@@ -1904,10 +2083,11 @@ class TestSendAll(TestBatch):
                 'message': 'test error'
             }
         })
-        _ = self._instrument_batch_messaging_service(
-            payload=self._batch_payload([(200, success_payload), (status, error_payload)]))
-        msg = messaging.Message(topic='foo')
-        batch_response = messaging.send_all([msg, msg])
+        _ = self._instrument_messaging_service(
+            response_dict={'foo1': [200, success_payload], 'foo2': [status, error_payload]})
+        msg1 = messaging.Message(topic='foo1')
+        msg2 = messaging.Message(topic='foo2')
+        batch_response = messaging.send_each([msg1, msg2])
         assert batch_response.success_count == 1
         assert batch_response.failure_count == 1
         assert len(batch_response.responses) == 2
@@ -1923,7 +2103,7 @@ class TestSendAll(TestBatch):
         check_exception(exception, 'test error', status)
 
     @pytest.mark.parametrize('status', HTTP_ERROR_CODES)
-    def test_send_all_canonical_error_code(self, status):
+    def test_send_each_canonical_error_code(self, status):
         success_payload = json.dumps({'name': 'message-id'})
         error_payload = json.dumps({
             'error': {
@@ -1931,10 +2111,11 @@ class TestSendAll(TestBatch):
                 'message': 'test error'
             }
         })
-        _ = self._instrument_batch_messaging_service(
-            payload=self._batch_payload([(200, success_payload), (status, error_payload)]))
-        msg = messaging.Message(topic='foo')
-        batch_response = messaging.send_all([msg, msg])
+        _ = self._instrument_messaging_service(
+            response_dict={'foo1': [200, success_payload], 'foo2': [status, error_payload]})
+        msg1 = messaging.Message(topic='foo1')
+        msg2 = messaging.Message(topic='foo2')
+        batch_response = messaging.send_each([msg1, msg2])
         assert batch_response.success_count == 1
         assert batch_response.failure_count == 1
         assert len(batch_response.responses) == 2
@@ -1951,7 +2132,7 @@ class TestSendAll(TestBatch):
 
     @pytest.mark.parametrize('status', HTTP_ERROR_CODES)
     @pytest.mark.parametrize('fcm_error_code, exc_type', FCM_ERROR_CODES.items())
-    def test_send_all_fcm_error_code(self, status, fcm_error_code, exc_type):
+    def test_send_each_fcm_error_code(self, status, fcm_error_code, exc_type):
         success_payload = json.dumps({'name': 'message-id'})
         error_payload = json.dumps({
             'error': {
@@ -1965,10 +2146,11 @@ class TestSendAll(TestBatch):
                 ],
             }
         })
-        _ = self._instrument_batch_messaging_service(
-            payload=self._batch_payload([(200, success_payload), (status, error_payload)]))
-        msg = messaging.Message(topic='foo')
-        batch_response = messaging.send_all([msg, msg])
+        _ = self._instrument_messaging_service(
+            response_dict={'foo1': [200, success_payload], 'foo2': [status, error_payload]})
+        msg1 = messaging.Message(topic='foo1')
+        msg2 = messaging.Message(topic='foo2')
+        batch_response = messaging.send_each([msg1, msg2])
         assert batch_response.success_count == 1
         assert batch_response.failure_count == 1
         assert len(batch_response.responses) == 2
@@ -1983,108 +2165,39 @@ class TestSendAll(TestBatch):
         assert isinstance(exception, exc_type)
         check_exception(exception, 'test error', status)
 
-    @pytest.mark.parametrize('status, exc_type', HTTP_ERROR_CODES.items())
-    def test_send_all_batch_error(self, status, exc_type):
-        _ = self._instrument_batch_messaging_service(status=status, payload='{}')
-        msg = messaging.Message(topic='foo')
-        with pytest.raises(exc_type) as excinfo:
-            messaging.send_all([msg])
-        expected = 'Unexpected HTTP response with status: {0}; body: {{}}'.format(status)
-        check_exception(excinfo.value, expected, status)
 
-    @pytest.mark.parametrize('status', HTTP_ERROR_CODES)
-    def test_send_all_batch_detailed_error(self, status):
-        payload = json.dumps({
-            'error': {
-                'status': 'INVALID_ARGUMENT',
-                'message': 'test error'
-            }
-        })
-        _ = self._instrument_batch_messaging_service(status=status, payload=payload)
-        msg = messaging.Message(topic='foo')
-        with pytest.raises(exceptions.InvalidArgumentError) as excinfo:
-            messaging.send_all([msg])
-        check_exception(excinfo.value, 'test error', status)
-
-    @pytest.mark.parametrize('status', HTTP_ERROR_CODES)
-    def test_send_all_batch_canonical_error_code(self, status):
-        payload = json.dumps({
-            'error': {
-                'status': 'NOT_FOUND',
-                'message': 'test error'
-            }
-        })
-        _ = self._instrument_batch_messaging_service(status=status, payload=payload)
-        msg = messaging.Message(topic='foo')
-        with pytest.raises(exceptions.NotFoundError) as excinfo:
-            messaging.send_all([msg])
-        check_exception(excinfo.value, 'test error', status)
-
-    @pytest.mark.parametrize('status', HTTP_ERROR_CODES)
-    def test_send_all_batch_fcm_error_code(self, status):
-        payload = json.dumps({
-            'error': {
-                'status': 'INVALID_ARGUMENT',
-                'message': 'test error',
-                'details': [
-                    {
-                        '@type': 'type.googleapis.com/google.firebase.fcm.v1.FcmError',
-                        'errorCode': 'UNREGISTERED',
-                    },
-                ],
-            }
-        })
-        _ = self._instrument_batch_messaging_service(status=status, payload=payload)
-        msg = messaging.Message(topic='foo')
-        with pytest.raises(messaging.UnregisteredError) as excinfo:
-            messaging.send_all([msg])
-        check_exception(excinfo.value, 'test error', status)
-
-    def test_send_all_runtime_exception(self):
-        exc = BrokenPipeError('Test error')
-        _ = self._instrument_batch_messaging_service(exc=exc)
-        msg = messaging.Message(topic='foo')
-
-        with pytest.raises(exceptions.UnknownError) as excinfo:
-            messaging.send_all([msg])
-
-        expected = 'Unknown error while making a remote service call: Test error'
-        assert str(excinfo.value) == expected
-        assert excinfo.value.cause is exc
-        assert excinfo.value.http_response is None
-
-
-class TestSendMulticast(TestBatch):
+class TestSendEachForMulticast(TestSendEach):
 
     def test_no_project_id(self):
         def evaluate():
             app = firebase_admin.initialize_app(testutils.MockCredential(), name='no_project_id')
             with pytest.raises(ValueError):
-                messaging.send_all([messaging.Message(topic='foo')], app=app)
+                messaging.send_each([messaging.Message(topic='foo')], app=app)
         testutils.run_without_project_id(evaluate)
 
     @pytest.mark.parametrize('msg', NON_LIST_ARGS)
-    def test_invalid_send_multicast(self, msg):
+    def test_invalid_send_each_for_multicast(self, msg):
         with pytest.raises(ValueError) as excinfo:
-            messaging.send_multicast(msg)
+            messaging.send_each_for_multicast(msg)
         expected = 'Message must be an instance of messaging.MulticastMessage class.'
         assert str(excinfo.value) == expected
 
-    def test_send_multicast(self):
-        payload = json.dumps({'name': 'message-id'})
-        _ = self._instrument_batch_messaging_service(
-            payload=self._batch_payload([(200, payload), (200, payload)]))
-        msg = messaging.MulticastMessage(tokens=['foo', 'foo'])
-        batch_response = messaging.send_multicast(msg, dry_run=True)
+    def test_send_each_for_multicast(self):
+        payload1 = json.dumps({'name': 'message-id1'})
+        payload2 = json.dumps({'name': 'message-id2'})
+        _ = self._instrument_messaging_service(
+            response_dict={'foo1': [200, payload1], 'foo2': [200, payload2]})
+        msg = messaging.MulticastMessage(tokens=['foo1', 'foo2'])
+        batch_response = messaging.send_each_for_multicast(msg, dry_run=True)
         assert batch_response.success_count == 2
         assert batch_response.failure_count == 0
         assert len(batch_response.responses) == 2
-        assert [r.message_id for r in batch_response.responses] == ['message-id', 'message-id']
-        assert all([r.success for r in batch_response.responses])
-        assert not any([r.exception for r in batch_response.responses])
+        assert [r.message_id for r in batch_response.responses] == ['message-id1', 'message-id2']
+        assert all(r.success for r in batch_response.responses)
+        assert not any(r.exception for r in batch_response.responses)
 
     @pytest.mark.parametrize('status', HTTP_ERROR_CODES)
-    def test_send_multicast_detailed_error(self, status):
+    def test_send_each_for_multicast_detailed_error(self, status):
         success_payload = json.dumps({'name': 'message-id'})
         error_payload = json.dumps({
             'error': {
@@ -2092,10 +2205,10 @@ class TestSendMulticast(TestBatch):
                 'message': 'test error'
             }
         })
-        _ = self._instrument_batch_messaging_service(
-            payload=self._batch_payload([(200, success_payload), (status, error_payload)]))
-        msg = messaging.MulticastMessage(tokens=['foo', 'foo'])
-        batch_response = messaging.send_multicast(msg)
+        _ = self._instrument_messaging_service(
+            response_dict={'foo1': [200, success_payload], 'foo2': [status, error_payload]})
+        msg = messaging.MulticastMessage(tokens=['foo1', 'foo2'])
+        batch_response = messaging.send_each_for_multicast(msg)
         assert batch_response.success_count == 1
         assert batch_response.failure_count == 1
         assert len(batch_response.responses) == 2
@@ -2112,7 +2225,7 @@ class TestSendMulticast(TestBatch):
         check_exception(exception, 'test error', status)
 
     @pytest.mark.parametrize('status', HTTP_ERROR_CODES)
-    def test_send_multicast_canonical_error_code(self, status):
+    def test_send_each_for_multicast_canonical_error_code(self, status):
         success_payload = json.dumps({'name': 'message-id'})
         error_payload = json.dumps({
             'error': {
@@ -2120,10 +2233,10 @@ class TestSendMulticast(TestBatch):
                 'message': 'test error'
             }
         })
-        _ = self._instrument_batch_messaging_service(
-            payload=self._batch_payload([(200, success_payload), (status, error_payload)]))
-        msg = messaging.MulticastMessage(tokens=['foo', 'foo'])
-        batch_response = messaging.send_multicast(msg)
+        _ = self._instrument_messaging_service(
+            response_dict={'foo1': [200, success_payload], 'foo2': [status, error_payload]})
+        msg = messaging.MulticastMessage(tokens=['foo1', 'foo2'])
+        batch_response = messaging.send_each_for_multicast(msg)
         assert batch_response.success_count == 1
         assert batch_response.failure_count == 1
         assert len(batch_response.responses) == 2
@@ -2140,7 +2253,7 @@ class TestSendMulticast(TestBatch):
         check_exception(exception, 'test error', status)
 
     @pytest.mark.parametrize('status', HTTP_ERROR_CODES)
-    def test_send_multicast_fcm_error_code(self, status):
+    def test_send_each_for_multicast_fcm_error_code(self, status):
         success_payload = json.dumps({'name': 'message-id'})
         error_payload = json.dumps({
             'error': {
@@ -2154,10 +2267,10 @@ class TestSendMulticast(TestBatch):
                 ],
             }
         })
-        _ = self._instrument_batch_messaging_service(
-            payload=self._batch_payload([(200, success_payload), (status, error_payload)]))
-        msg = messaging.MulticastMessage(tokens=['foo', 'foo'])
-        batch_response = messaging.send_multicast(msg)
+        _ = self._instrument_messaging_service(
+            response_dict={'foo1': [200, success_payload], 'foo2': [status, error_payload]})
+        msg = messaging.MulticastMessage(tokens=['foo1', 'foo2'])
+        batch_response = messaging.send_each_for_multicast(msg)
         assert batch_response.success_count == 1
         assert batch_response.failure_count == 1
         assert len(batch_response.responses) == 2
@@ -2172,76 +2285,6 @@ class TestSendMulticast(TestBatch):
         exception = error_response.exception
         assert isinstance(exception, messaging.UnregisteredError)
         check_exception(exception, 'test error', status)
-
-    @pytest.mark.parametrize('status, exc_type', HTTP_ERROR_CODES.items())
-    def test_send_multicast_batch_error(self, status, exc_type):
-        _ = self._instrument_batch_messaging_service(status=status, payload='{}')
-        msg = messaging.MulticastMessage(tokens=['foo'])
-        with pytest.raises(exc_type) as excinfo:
-            messaging.send_multicast(msg)
-        expected = 'Unexpected HTTP response with status: {0}; body: {{}}'.format(status)
-        check_exception(excinfo.value, expected, status)
-
-    @pytest.mark.parametrize('status', HTTP_ERROR_CODES)
-    def test_send_multicast_batch_detailed_error(self, status):
-        payload = json.dumps({
-            'error': {
-                'status': 'INVALID_ARGUMENT',
-                'message': 'test error'
-            }
-        })
-        _ = self._instrument_batch_messaging_service(status=status, payload=payload)
-        msg = messaging.MulticastMessage(tokens=['foo'])
-        with pytest.raises(exceptions.InvalidArgumentError) as excinfo:
-            messaging.send_multicast(msg)
-        check_exception(excinfo.value, 'test error', status)
-
-    @pytest.mark.parametrize('status', HTTP_ERROR_CODES)
-    def test_send_multicast_batch_canonical_error_code(self, status):
-        payload = json.dumps({
-            'error': {
-                'status': 'NOT_FOUND',
-                'message': 'test error'
-            }
-        })
-        _ = self._instrument_batch_messaging_service(status=status, payload=payload)
-        msg = messaging.MulticastMessage(tokens=['foo'])
-        with pytest.raises(exceptions.NotFoundError) as excinfo:
-            messaging.send_multicast(msg)
-        check_exception(excinfo.value, 'test error', status)
-
-    @pytest.mark.parametrize('status', HTTP_ERROR_CODES)
-    def test_send_multicast_batch_fcm_error_code(self, status):
-        payload = json.dumps({
-            'error': {
-                'status': 'INVALID_ARGUMENT',
-                'message': 'test error',
-                'details': [
-                    {
-                        '@type': 'type.googleapis.com/google.firebase.fcm.v1.FcmError',
-                        'errorCode': 'UNREGISTERED',
-                    },
-                ],
-            }
-        })
-        _ = self._instrument_batch_messaging_service(status=status, payload=payload)
-        msg = messaging.MulticastMessage(tokens=['foo'])
-        with pytest.raises(messaging.UnregisteredError) as excinfo:
-            messaging.send_multicast(msg)
-        check_exception(excinfo.value, 'test error', status)
-
-    def test_send_multicast_runtime_exception(self):
-        exc = BrokenPipeError('Test error')
-        _ = self._instrument_batch_messaging_service(exc=exc)
-        msg = messaging.MulticastMessage(tokens=['foo'])
-
-        with pytest.raises(exceptions.UnknownError) as excinfo:
-            messaging.send_multicast(msg)
-
-        expected = 'Unknown error while making a remote service call: Test error'
-        assert str(excinfo.value) == expected
-        assert excinfo.value.cause is exc
-        assert excinfo.value.http_response is None
 
 
 class TestTopicManagement:
@@ -2281,10 +2324,17 @@ class TestTopicManagement:
             testutils.MockAdapter(payload, status, recorder))
         return fcm_service, recorder
 
-    def _get_url(self, path):
-        return '{0}/{1}'.format(messaging._MessagingService.IID_URL, path)
+    def _assert_request(self, request, expected_method, expected_url):
+        assert request.method == expected_method
+        assert request.url == expected_url
+        assert request.headers['access_token_auth'] == 'true'
+        expected_metrics_header = _utils.get_metrics_header() + ' mock-cred-metric-tag'
+        assert request.headers['x-goog-api-client'] == expected_metrics_header
 
-    @pytest.mark.parametrize('tokens', [None, '', list(), dict(), tuple()])
+    def _get_url(self, path):
+        return f'{messaging._MessagingService.IID_URL}/{path}'
+
+    @pytest.mark.parametrize('tokens', [None, '', [], {}, tuple()])
     def test_invalid_tokens(self, tokens):
         expected = 'Tokens must be a string or a non-empty list of strings.'
         if isinstance(tokens, str):
@@ -2315,8 +2365,7 @@ class TestTopicManagement:
         resp = messaging.subscribe_to_topic(args[0], args[1])
         self._check_response(resp)
         assert len(recorder) == 1
-        assert recorder[0].method == 'POST'
-        assert recorder[0].url == self._get_url('iid/v1:batchAdd')
+        self._assert_request(recorder[0], 'POST', self._get_url('iid/v1:batchAdd'))
         assert json.loads(recorder[0].body.decode()) == args[2]
 
     @pytest.mark.parametrize('status, exc_type', HTTP_ERROR_CODES.items())
@@ -2327,19 +2376,17 @@ class TestTopicManagement:
             messaging.subscribe_to_topic('foo', 'test-topic')
         assert str(excinfo.value) == 'Error while calling the IID service: error_reason'
         assert len(recorder) == 1
-        assert recorder[0].method == 'POST'
-        assert recorder[0].url == self._get_url('iid/v1:batchAdd')
+        self._assert_request(recorder[0], 'POST', self._get_url('iid/v1:batchAdd'))
 
     @pytest.mark.parametrize('status, exc_type', HTTP_ERROR_CODES.items())
     def test_subscribe_to_topic_non_json_error(self, status, exc_type):
         _, recorder = self._instrument_iid_service(status=status, payload='not json')
         with pytest.raises(exc_type) as excinfo:
             messaging.subscribe_to_topic('foo', 'test-topic')
-        reason = 'Unexpected HTTP response with status: {0}; body: not json'.format(status)
+        reason = f'Unexpected HTTP response with status: {status}; body: not json'
         assert str(excinfo.value) == reason
         assert len(recorder) == 1
-        assert recorder[0].method == 'POST'
-        assert recorder[0].url == self._get_url('iid/v1:batchAdd')
+        self._assert_request(recorder[0], 'POST', self._get_url('iid/v1:batchAdd'))
 
     @pytest.mark.parametrize('args', _VALID_ARGS)
     def test_unsubscribe_from_topic(self, args):
@@ -2347,8 +2394,7 @@ class TestTopicManagement:
         resp = messaging.unsubscribe_from_topic(args[0], args[1])
         self._check_response(resp)
         assert len(recorder) == 1
-        assert recorder[0].method == 'POST'
-        assert recorder[0].url == self._get_url('iid/v1:batchRemove')
+        self._assert_request(recorder[0], 'POST', self._get_url('iid/v1:batchRemove'))
         assert json.loads(recorder[0].body.decode()) == args[2]
 
     @pytest.mark.parametrize('status, exc_type', HTTP_ERROR_CODES.items())
@@ -2359,19 +2405,17 @@ class TestTopicManagement:
             messaging.unsubscribe_from_topic('foo', 'test-topic')
         assert str(excinfo.value) == 'Error while calling the IID service: error_reason'
         assert len(recorder) == 1
-        assert recorder[0].method == 'POST'
-        assert recorder[0].url == self._get_url('iid/v1:batchRemove')
+        self._assert_request(recorder[0], 'POST', self._get_url('iid/v1:batchRemove'))
 
     @pytest.mark.parametrize('status, exc_type', HTTP_ERROR_CODES.items())
     def test_unsubscribe_from_topic_non_json_error(self, status, exc_type):
         _, recorder = self._instrument_iid_service(status=status, payload='not json')
         with pytest.raises(exc_type) as excinfo:
             messaging.unsubscribe_from_topic('foo', 'test-topic')
-        reason = 'Unexpected HTTP response with status: {0}; body: not json'.format(status)
+        reason = f'Unexpected HTTP response with status: {status}; body: not json'
         assert str(excinfo.value) == reason
         assert len(recorder) == 1
-        assert recorder[0].method == 'POST'
-        assert recorder[0].url == self._get_url('iid/v1:batchRemove')
+        self._assert_request(recorder[0], 'POST', self._get_url('iid/v1:batchRemove'))
 
     def _check_response(self, resp):
         assert resp.success_count == 1

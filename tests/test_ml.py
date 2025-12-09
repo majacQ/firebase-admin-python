@@ -21,12 +21,11 @@ import pytest
 import firebase_admin
 from firebase_admin import exceptions
 from firebase_admin import ml
+from firebase_admin import _utils
 from tests import testutils
 
 
 BASE_URL = 'https://firebaseml.googleapis.com/v1beta2/'
-HEADER_CLIENT_KEY = 'X-FIREBASE-CLIENT'
-HEADER_CLIENT_VALUE = 'fire-admin-python/{0}'.format(firebase_admin.__version__)
 PROJECT_ID = 'my-project-1'
 
 PAGE_TOKEN = 'pageToken'
@@ -50,7 +49,7 @@ TAGS = [TAG_1, TAG_2]
 TAGS_2 = [TAG_1, TAG_3]
 
 MODEL_ID_1 = 'modelId1'
-MODEL_NAME_1 = 'projects/{0}/models/{1}'.format(PROJECT_ID, MODEL_ID_1)
+MODEL_NAME_1 = f'projects/{PROJECT_ID}/models/{MODEL_ID_1}'
 DISPLAY_NAME_1 = 'displayName1'
 MODEL_JSON_1 = {
     'name': MODEL_NAME_1,
@@ -59,7 +58,7 @@ MODEL_JSON_1 = {
 MODEL_1 = ml.Model.from_dict(MODEL_JSON_1)
 
 MODEL_ID_2 = 'modelId2'
-MODEL_NAME_2 = 'projects/{0}/models/{1}'.format(PROJECT_ID, MODEL_ID_2)
+MODEL_NAME_2 = f'projects/{PROJECT_ID}/models/{MODEL_ID_2}'
 DISPLAY_NAME_2 = 'displayName2'
 MODEL_JSON_2 = {
     'name': MODEL_NAME_2,
@@ -68,7 +67,7 @@ MODEL_JSON_2 = {
 MODEL_2 = ml.Model.from_dict(MODEL_JSON_2)
 
 MODEL_ID_3 = 'modelId3'
-MODEL_NAME_3 = 'projects/{0}/models/{1}'.format(PROJECT_ID, MODEL_ID_3)
+MODEL_NAME_3 = f'projects/{PROJECT_ID}/models/{MODEL_ID_3}'
 DISPLAY_NAME_3 = 'displayName3'
 MODEL_JSON_3 = {
     'name': MODEL_NAME_3,
@@ -80,7 +79,7 @@ MODEL_STATE_PUBLISHED_JSON = {
     'published': True
 }
 VALIDATION_ERROR_CODE = 400
-VALIDATION_ERROR_MSG = 'No model format found for {0}.'.format(MODEL_ID_1)
+VALIDATION_ERROR_MSG = f'No model format found for {MODEL_ID_1}.'
 MODEL_STATE_ERROR_JSON = {
     'validationError': {
         'code': VALIDATION_ERROR_CODE,
@@ -88,19 +87,19 @@ MODEL_STATE_ERROR_JSON = {
     }
 }
 
-OPERATION_NAME_1 = 'projects/{0}/operations/123'.format(PROJECT_ID)
+OPERATION_NAME_1 = f'projects/{PROJECT_ID}/operations/123'
 OPERATION_NOT_DONE_JSON_1 = {
     'name': OPERATION_NAME_1,
     'metadata': {
         '@type': 'type.googleapis.com/google.firebase.ml.v1beta2.ModelOperationMetadata',
-        'name': 'projects/{0}/models/{1}'.format(PROJECT_ID, MODEL_ID_1),
+        'name': f'projects/{PROJECT_ID}/models/{MODEL_ID_1}',
         'basic_operation_status': 'BASIC_OPERATION_STATUS_UPLOADING'
     }
 }
 
 GCS_BUCKET_NAME = 'my_bucket'
 GCS_BLOB_NAME = 'mymodel.tflite'
-GCS_TFLITE_URI = 'gs://{0}/{1}'.format(GCS_BUCKET_NAME, GCS_BLOB_NAME)
+GCS_TFLITE_URI = f'gs://{GCS_BUCKET_NAME}/{GCS_BLOB_NAME}'
 GCS_TFLITE_URI_JSON = {'gcsTfliteUri': GCS_TFLITE_URI}
 GCS_TFLITE_MODEL_SOURCE = ml.TFLiteGCSModelSource(GCS_TFLITE_URI)
 TFLITE_FORMAT_JSON = {
@@ -121,18 +120,6 @@ TFLITE_FORMAT_JSON_2 = {
     'sizeBytes': '2345678'
 }
 TFLITE_FORMAT_2 = ml.TFLiteFormat.from_dict(TFLITE_FORMAT_JSON_2)
-
-AUTOML_MODEL_NAME = 'projects/111111111111/locations/us-central1/models/ICN7683346839371803263'
-AUTOML_MODEL_SOURCE = ml.TFLiteAutoMlSource(AUTOML_MODEL_NAME)
-TFLITE_FORMAT_JSON_3 = {
-    'automlModel': AUTOML_MODEL_NAME,
-    'sizeBytes': '3456789'
-}
-TFLITE_FORMAT_3 = ml.TFLiteFormat.from_dict(TFLITE_FORMAT_JSON_3)
-
-AUTOML_MODEL_NAME_2 = 'projects/2222222222/locations/us-central1/models/ICN2222222222222222222'
-AUTOML_MODEL_NAME_JSON_2 = {'automlModel': AUTOML_MODEL_NAME_2}
-AUTOML_MODEL_SOURCE_2 = ml.TFLiteAutoMlSource(AUTOML_MODEL_NAME_2)
 
 CREATED_UPDATED_MODEL_JSON_1 = {
     'name': MODEL_NAME_1,
@@ -270,8 +257,8 @@ INVALID_MODEL_ID_ARGS = [
 INVALID_MODEL_ARGS = [
     'abc',
     4.2,
-    list(),
-    dict(),
+    [],
+    {},
     True,
     -1,
     0,
@@ -285,9 +272,10 @@ INVALID_OP_NAME_ARGS = [
     'projects/$#@/operations/123',
     'projects/1234/operations/123/extrathing',
 ]
-PAGE_SIZE_VALUE_ERROR_MSG = 'Page size must be a positive integer between ' \
-                            '1 and {0}'.format(ml._MAX_PAGE_SIZE)
-INVALID_STRING_OR_NONE_ARGS = [0, -1, 4.2, 0x10, False, list(), dict()]
+PAGE_SIZE_VALUE_ERROR_MSG = (
+    f'Page size must be a positive integer between 1 and {ml._MAX_PAGE_SIZE}'
+)
+INVALID_STRING_OR_NONE_ARGS = [0, -1, 4.2, 0x10, False, [], {}]
 
 
 # For validation type errors
@@ -336,6 +324,13 @@ def instrument_ml_service(status=200, payload=None, operations=False, app=None):
             session_url, adapter(payload, status, recorder))
     return recorder
 
+def _assert_request(request, expected_method, expected_url):
+    assert request.method == expected_method
+    assert request.url == expected_url
+    assert request.headers['X-FIREBASE-CLIENT'] == f'fire-admin-python/{firebase_admin.__version__}'
+    expected_metrics_header = _utils.get_metrics_header() + ' mock-cred-metric-tag'
+    assert request.headers['x-goog-api-client'] == expected_metrics_header
+
 class _TestStorageClient:
     @staticmethod
     def upload(bucket_name, model_file_name, app):
@@ -364,8 +359,7 @@ class TestModel:
 
     @staticmethod
     def _op_url(project_id):
-        return BASE_URL + \
-            'projects/{0}/operations/123'.format(project_id)
+        return BASE_URL + f'projects/{project_id}/operations/123'
 
     def test_model_success_err_state_lro(self):
         model = ml.Model.from_dict(FULL_MODEL_ERR_STATE_LRO_JSON)
@@ -417,14 +411,6 @@ class TestModel:
             'tfliteModel': TFLITE_FORMAT_JSON_2
         }
 
-        model.model_format = TFLITE_FORMAT_3
-        assert model.as_dict() == {
-            'displayName': DISPLAY_NAME_2,
-            'tags': TAGS_2,
-            'tfliteModel': TFLITE_FORMAT_JSON_3
-        }
-
-
     def test_gcs_tflite_model_format_source_creation(self):
         model_source = ml.TFLiteGCSModelSource(gcs_tflite_uri=GCS_TFLITE_URI)
         model_format = ml.TFLiteFormat(model_source=model_source)
@@ -433,17 +419,6 @@ class TestModel:
             'displayName': DISPLAY_NAME_1,
             'tfliteModel': {
                 'gcsTfliteUri': GCS_TFLITE_URI
-            }
-        }
-
-    def test_auto_ml_tflite_model_format_source_creation(self):
-        model_source = ml.TFLiteAutoMlSource(auto_ml_model=AUTOML_MODEL_NAME)
-        model_format = ml.TFLiteFormat(model_source=model_source)
-        model = ml.Model(display_name=DISPLAY_NAME_1, model_format=model_format)
-        assert model.as_dict() == {
-            'displayName': DISPLAY_NAME_1,
-            'tfliteModel': {
-                'automlModel': AUTOML_MODEL_NAME
             }
         }
 
@@ -460,13 +435,6 @@ class TestModel:
         assert model_source.gcs_tflite_uri == GCS_TFLITE_URI_2
         assert model_source.as_dict() == GCS_TFLITE_URI_JSON_2
 
-    def test_auto_ml_tflite_model_source_setters(self):
-        model_source = ml.TFLiteAutoMlSource(AUTOML_MODEL_NAME)
-        model_source.auto_ml_model = AUTOML_MODEL_NAME_2
-        assert model_source.auto_ml_model == AUTOML_MODEL_NAME_2
-        assert model_source.as_dict() == AUTOML_MODEL_NAME_JSON_2
-
-
     def test_model_format_setters(self):
         model_format = ml.TFLiteFormat(model_source=GCS_TFLITE_MODEL_SOURCE)
         model_format.model_source = GCS_TFLITE_MODEL_SOURCE_2
@@ -474,14 +442,6 @@ class TestModel:
         assert model_format.as_dict() == {
             'tfliteModel': {
                 'gcsTfliteUri': GCS_TFLITE_URI_2
-            }
-        }
-
-        model_format.model_source = AUTOML_MODEL_SOURCE
-        assert model_format.model_source == AUTOML_MODEL_SOURCE
-        assert model_format.as_dict() == {
-            'tfliteModel': {
-                'automlModel': AUTOML_MODEL_NAME
             }
         }
 
@@ -570,23 +530,6 @@ class TestModel:
             ml.TFLiteGCSModelSource(gcs_tflite_uri=uri)
         check_error(excinfo, exc_type)
 
-    @pytest.mark.parametrize('auto_ml_model, exc_type', [
-        (123, TypeError),
-        ('abc', ValueError),
-        ('/projects/123456/locations/us-central1/models/noLeadingSlash', ValueError),
-        ('projects/123546/models/ICN123456', ValueError),
-        ('projects//locations/us-central1/models/ICN123456', ValueError),
-        ('projects/123456/locations//models/ICN123456', ValueError),
-        ('projects/123456/locations/us-central1/models/', ValueError),
-        ('projects/ABC/locations/us-central1/models/ICN123456', ValueError),
-        ('projects/123456/locations/us-central1/models/@#$%^&', ValueError),
-        ('projects/123456/locations/us-cent/ral1/models/ICN123456', ValueError),
-    ])
-    def test_auto_ml_tflite_source_validation_errors(self, auto_ml_model, exc_type):
-        with pytest.raises(exc_type) as excinfo:
-            ml.TFLiteAutoMlSource(auto_ml_model=auto_ml_model)
-        check_error(excinfo, exc_type)
-
     def test_wait_for_unlocked_not_locked(self):
         model = ml.Model(display_name="not_locked")
         model.wait_for_unlocked()
@@ -599,9 +542,7 @@ class TestModel:
         model.wait_for_unlocked()
         assert model == FULL_MODEL_PUBLISHED
         assert len(recorder) == 1
-        assert recorder[0].method == 'GET'
-        assert recorder[0].url == TestModel._op_url(PROJECT_ID)
-        assert recorder[0].headers[HEADER_CLIENT_KEY] == HEADER_CLIENT_VALUE
+        _assert_request(recorder[0], 'GET', TestModel._op_url(PROJECT_ID))
 
     def test_wait_for_unlocked_timeout(self):
         recorder = instrument_ml_service(
@@ -628,16 +569,15 @@ class TestCreateModel:
 
     @staticmethod
     def _url(project_id):
-        return BASE_URL + 'projects/{0}/models'.format(project_id)
+        return BASE_URL + f'projects/{project_id}/models'
 
     @staticmethod
     def _op_url(project_id):
-        return BASE_URL + \
-            'projects/{0}/operations/123'.format(project_id)
+        return BASE_URL + f'projects/{project_id}/operations/123'
 
     @staticmethod
     def _get_url(project_id, model_id):
-        return BASE_URL + 'projects/{0}/models/{1}'.format(project_id, model_id)
+        return BASE_URL + f'projects/{project_id}/models/{model_id}'
 
     def test_immediate_done(self):
         instrument_ml_service(status=200, payload=OPERATION_DONE_RESPONSE)
@@ -653,12 +593,8 @@ class TestCreateModel:
 
         assert model == expected_model
         assert len(recorder) == 2
-        assert recorder[0].method == 'POST'
-        assert recorder[0].url == TestCreateModel._url(PROJECT_ID)
-        assert recorder[0].headers[HEADER_CLIENT_KEY] == HEADER_CLIENT_VALUE
-        assert recorder[1].method == 'GET'
-        assert recorder[1].url == TestCreateModel._get_url(PROJECT_ID, MODEL_ID_1)
-        assert recorder[1].headers[HEADER_CLIENT_KEY] == HEADER_CLIENT_VALUE
+        _assert_request(recorder[0], 'POST', TestCreateModel._url(PROJECT_ID))
+        _assert_request(recorder[1], 'GET', TestCreateModel._get_url(PROJECT_ID, MODEL_ID_1))
 
     def test_operation_error(self):
         instrument_ml_service(status=200, payload=OPERATION_ERROR_RESPONSE)
@@ -726,12 +662,11 @@ class TestUpdateModel:
 
     @staticmethod
     def _url(project_id, model_id):
-        return BASE_URL + 'projects/{0}/models/{1}'.format(project_id, model_id)
+        return BASE_URL + f'projects/{project_id}/models/{model_id}'
 
     @staticmethod
     def _op_url(project_id):
-        return BASE_URL + \
-            'projects/{0}/operations/123'.format(project_id)
+        return BASE_URL + f'projects/{project_id}/operations/123'
 
     def test_immediate_done(self):
         instrument_ml_service(status=200, payload=OPERATION_DONE_RESPONSE)
@@ -747,12 +682,8 @@ class TestUpdateModel:
 
         assert model == expected_model
         assert len(recorder) == 2
-        assert recorder[0].method == 'PATCH'
-        assert recorder[0].url == TestUpdateModel._url(PROJECT_ID, MODEL_ID_1)
-        assert recorder[0].headers[HEADER_CLIENT_KEY] == HEADER_CLIENT_VALUE
-        assert recorder[1].method == 'GET'
-        assert recorder[1].url == TestUpdateModel._url(PROJECT_ID, MODEL_ID_1)
-        assert recorder[1].headers[HEADER_CLIENT_KEY] == HEADER_CLIENT_VALUE
+        _assert_request(recorder[0], 'PATCH', TestUpdateModel._url(PROJECT_ID, MODEL_ID_1))
+        _assert_request(recorder[1], 'GET', TestUpdateModel._url(PROJECT_ID, MODEL_ID_1))
 
     def test_operation_error(self):
         instrument_ml_service(status=200, payload=OPERATION_ERROR_RESPONSE)
@@ -827,18 +758,16 @@ class TestPublishUnpublish:
 
     @staticmethod
     def _update_url(project_id, model_id):
-        update_url = 'projects/{0}/models/{1}?updateMask=state.published'.format(
-            project_id, model_id)
+        update_url = f'projects/{project_id}/models/{model_id}?updateMask=state.published'
         return BASE_URL + update_url
 
     @staticmethod
     def _get_url(project_id, model_id):
-        return BASE_URL + 'projects/{0}/models/{1}'.format(project_id, model_id)
+        return BASE_URL + f'projects/{project_id}/models/{model_id}'
 
     @staticmethod
     def _op_url(project_id):
-        return BASE_URL + \
-            'projects/{0}/operations/123'.format(project_id)
+        return BASE_URL + f'projects/{project_id}/operations/123'
 
     @pytest.mark.parametrize('publish_function, published', PUBLISH_UNPUBLISH_WITH_ARGS)
     def test_immediate_done(self, publish_function, published):
@@ -846,9 +775,8 @@ class TestPublishUnpublish:
         model = publish_function(MODEL_ID_1)
         assert model == CREATED_UPDATED_MODEL_1
         assert len(recorder) == 1
-        assert recorder[0].method == 'PATCH'
-        assert recorder[0].url == TestPublishUnpublish._update_url(PROJECT_ID, MODEL_ID_1)
-        assert recorder[0].headers[HEADER_CLIENT_KEY] == HEADER_CLIENT_VALUE
+        _assert_request(
+            recorder[0], 'PATCH', TestPublishUnpublish._update_url(PROJECT_ID, MODEL_ID_1))
         body = json.loads(recorder[0].body.decode())
         assert body.get('state', {}).get('published', None) is published
 
@@ -862,12 +790,10 @@ class TestPublishUnpublish:
 
         assert model == expected_model
         assert len(recorder) == 2
-        assert recorder[0].method == 'PATCH'
-        assert recorder[0].url == TestPublishUnpublish._update_url(PROJECT_ID, MODEL_ID_1)
-        assert recorder[0].headers[HEADER_CLIENT_KEY] == HEADER_CLIENT_VALUE
-        assert recorder[1].method == 'GET'
-        assert recorder[1].url == TestPublishUnpublish._get_url(PROJECT_ID, MODEL_ID_1)
-        assert recorder[1].headers[HEADER_CLIENT_KEY] == HEADER_CLIENT_VALUE
+        _assert_request(
+            recorder[0], 'PATCH', TestPublishUnpublish._update_url(PROJECT_ID, MODEL_ID_1))
+        _assert_request(
+            recorder[1], 'GET', TestPublishUnpublish._get_url(PROJECT_ID, MODEL_ID_1))
 
     @pytest.mark.parametrize('publish_function', PUBLISH_UNPUBLISH_FUNCS)
     def test_operation_error(self, publish_function):
@@ -912,15 +838,13 @@ class TestGetModel:
 
     @staticmethod
     def _url(project_id, model_id):
-        return BASE_URL + 'projects/{0}/models/{1}'.format(project_id, model_id)
+        return BASE_URL + f'projects/{project_id}/models/{model_id}'
 
     def test_get_model(self):
         recorder = instrument_ml_service(status=200, payload=DEFAULT_GET_RESPONSE)
         model = ml.get_model(MODEL_ID_1)
         assert len(recorder) == 1
-        assert recorder[0].method == 'GET'
-        assert recorder[0].url == TestGetModel._url(PROJECT_ID, MODEL_ID_1)
-        assert recorder[0].headers[HEADER_CLIENT_KEY] == HEADER_CLIENT_VALUE
+        _assert_request(recorder[0], 'GET', TestGetModel._url(PROJECT_ID, MODEL_ID_1))
         assert model == MODEL_1
         assert model.model_id == MODEL_ID_1
         assert model.display_name == DISPLAY_NAME_1
@@ -942,9 +866,7 @@ class TestGetModel:
             ERROR_MSG_NOT_FOUND
         )
         assert len(recorder) == 1
-        assert recorder[0].method == 'GET'
-        assert recorder[0].url == TestGetModel._url(PROJECT_ID, MODEL_ID_1)
-        assert recorder[0].headers[HEADER_CLIENT_KEY] == HEADER_CLIENT_VALUE
+        _assert_request(recorder[0], 'GET', TestGetModel._url(PROJECT_ID, MODEL_ID_1))
 
     def test_no_project_id(self):
         def evaluate():
@@ -967,15 +889,13 @@ class TestDeleteModel:
 
     @staticmethod
     def _url(project_id, model_id):
-        return BASE_URL + 'projects/{0}/models/{1}'.format(project_id, model_id)
+        return BASE_URL + f'projects/{project_id}/models/{model_id}'
 
     def test_delete_model(self):
         recorder = instrument_ml_service(status=200, payload=EMPTY_RESPONSE)
         ml.delete_model(MODEL_ID_1) # no response for delete
         assert len(recorder) == 1
-        assert recorder[0].method == 'DELETE'
-        assert recorder[0].url == TestDeleteModel._url(PROJECT_ID, MODEL_ID_1)
-        assert recorder[0].headers[HEADER_CLIENT_KEY] == HEADER_CLIENT_VALUE
+        _assert_request(recorder[0], 'DELETE', TestDeleteModel._url(PROJECT_ID, MODEL_ID_1))
 
     @pytest.mark.parametrize('model_id, exc_type', INVALID_MODEL_ID_ARGS)
     def test_delete_model_validation_errors(self, model_id, exc_type):
@@ -994,9 +914,7 @@ class TestDeleteModel:
             ERROR_MSG_NOT_FOUND
         )
         assert len(recorder) == 1
-        assert recorder[0].method == 'DELETE'
-        assert recorder[0].url == self._url(PROJECT_ID, MODEL_ID_1)
-        assert recorder[0].headers[HEADER_CLIENT_KEY] == HEADER_CLIENT_VALUE
+        _assert_request(recorder[0], 'DELETE', self._url(PROJECT_ID, MODEL_ID_1))
 
     def test_no_project_id(self):
         def evaluate():
@@ -1019,7 +937,7 @@ class TestListModels:
 
     @staticmethod
     def _url(project_id):
-        return BASE_URL + 'projects/{0}/models'.format(project_id)
+        return BASE_URL + f'projects/{project_id}/models'
 
     @staticmethod
     def _check_page(page, model_count):
@@ -1032,9 +950,7 @@ class TestListModels:
         recorder = instrument_ml_service(status=200, payload=DEFAULT_LIST_RESPONSE)
         models_page = ml.list_models()
         assert len(recorder) == 1
-        assert recorder[0].method == 'GET'
-        assert recorder[0].url == TestListModels._url(PROJECT_ID)
-        assert recorder[0].headers[HEADER_CLIENT_KEY] == HEADER_CLIENT_VALUE
+        _assert_request(recorder[0], 'GET', TestListModels._url(PROJECT_ID))
         TestListModels._check_page(models_page, 2)
         assert models_page.has_next_page
         assert models_page.next_page_token == NEXT_PAGE_TOKEN
@@ -1048,12 +964,10 @@ class TestListModels:
             page_size=10,
             page_token=PAGE_TOKEN)
         assert len(recorder) == 1
-        assert recorder[0].method == 'GET'
-        assert recorder[0].url == (
+        _assert_request(recorder[0], 'GET', (
             TestListModels._url(PROJECT_ID) +
-            '?filter=display_name%3DdisplayName3&page_size=10&page_token={0}'
-            .format(PAGE_TOKEN))
-        assert recorder[0].headers[HEADER_CLIENT_KEY] == HEADER_CLIENT_VALUE
+            f'?filter=display_name%3DdisplayName3&page_size=10&page_token={PAGE_TOKEN}'
+            ))
         assert isinstance(models_page, ml.ListModelsPage)
         assert len(models_page.models) == 1
         assert models_page.models[0] == MODEL_3
@@ -1068,8 +982,8 @@ class TestListModels:
     @pytest.mark.parametrize('page_size, exc_type, error_message', [
         ('abc', TypeError, 'Page size must be a number or None.'),
         (4.2, TypeError, 'Page size must be a number or None.'),
-        (list(), TypeError, 'Page size must be a number or None.'),
-        (dict(), TypeError, 'Page size must be a number or None.'),
+        ([], TypeError, 'Page size must be a number or None.'),
+        ({}, TypeError, 'Page size must be a number or None.'),
         (True, TypeError, 'Page size must be a number or None.'),
         (-1, ValueError, PAGE_SIZE_VALUE_ERROR_MSG),
         (0, ValueError, PAGE_SIZE_VALUE_ERROR_MSG),
@@ -1097,9 +1011,7 @@ class TestListModels:
             ERROR_MSG_BAD_REQUEST
         )
         assert len(recorder) == 1
-        assert recorder[0].method == 'GET'
-        assert recorder[0].url == TestListModels._url(PROJECT_ID)
-        assert recorder[0].headers[HEADER_CLIENT_KEY] == HEADER_CLIENT_VALUE
+        _assert_request(recorder[0], 'GET', TestListModels._url(PROJECT_ID))
 
     def test_no_project_id(self):
         def evaluate():
@@ -1115,7 +1027,7 @@ class TestListModels:
         assert models_page.next_page_token == ''
         assert models_page.has_next_page is False
         assert models_page.get_next_page() is None
-        models = [model for model in models_page.iterate_all()]
+        models = list(models_page.iterate_all())
         assert len(models) == 1
 
     def test_list_multiple_pages(self):
@@ -1145,7 +1057,7 @@ class TestListModels:
         iterator = page.iterate_all()
         for index in range(2):
             model = next(iterator)
-            assert model.display_name == 'displayName{0}'.format(index+1)
+            assert model.display_name == f'displayName{index+1}'
         assert len(recorder) == 1
 
         # Page 2
@@ -1161,7 +1073,7 @@ class TestListModels:
         assert len(recorder) == 1
         assert len(page.models) == 3
         iterator = page.iterate_all()
-        models = [model for model in iterator]
+        models = list(iterator)
         assert len(page.models) == 3
         with pytest.raises(StopIteration):
             next(iterator)
@@ -1172,5 +1084,5 @@ class TestListModels:
         page = ml.list_models()
         assert len(recorder) == 1
         assert len(page.models) == 0
-        models = [model for model in page.iterate_all()]
+        models = list(page.iterate_all())
         assert len(models) == 0
